@@ -404,7 +404,16 @@ fn detect_sops(bundled_dirs: &[PathBuf]) -> SopsInfo {
 
 fn sops_error(stderr: &str) -> String {
     let lower = stderr.to_lowercase();
-    if ["no identity matched", "failed to decrypt", "could not decrypt data key", "did not find keys"]
+    // The wording differs between platforms and sops versions.
+    if [
+        "no identity matched",
+        "failed to decrypt",
+        "could not decrypt data key",
+        "did not find keys",
+        "failed to get the data key",
+        "no master key was able to decrypt",
+        "failed to load age identities",
+    ]
         .iter()
         .any(|needle| lower.contains(needle))
     {
@@ -668,7 +677,11 @@ impl App {
     fn sops(&self, args: &[&str], extra_env: &[(&str, String)], cwd: Option<&Path>, stdin: Option<&str>) -> Res<Output> {
         let missing = || "sops wasn't found next to the app or on your PATH.".to_string();
         let path = self.sops.path.as_ref().ok_or_else(missing)?;
-        let mut env = vec![("SOPS_AGE_KEY", self.all_secrets())];
+        let mut env = Vec::new();
+        let secrets = self.all_secrets();
+        if !secrets.is_empty() {
+            env.push(("SOPS_AGE_KEY", secrets));
+        }
         env.extend(extra_env.iter().cloned());
         run(Path::new(path), args, &env, cwd, stdin).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound { missing() } else { e.to_string() }
