@@ -17,7 +17,7 @@ Decrypted values are held in memory only. The app makes no network requests.
 
 1. Download the package for your system from the [releases page](https://github.com/nicostoe/open-sops-ui/releases). Each one comes in two variants:
    - `…-with-sops`: includes the official `sops` binary, nothing else to install.
-   - without the suffix: uses the `sops` 3.9 or newer on your `PATH`. Get it from [github.com/getsops/sops/releases](https://github.com/getsops/sops/releases).
+   - without the suffix: uses the `sops` 3.10 or newer on your `PATH`. Get it from [github.com/getsops/sops/releases](https://github.com/getsops/sops/releases).
 2. Install it:
 
    | OS | Package |
@@ -62,7 +62,7 @@ npm run build
 
 Tauri can't cross-compile: each system's package has to be built on that system (or in CI on a runner for it).
 
-`.github/workflows/build.yml` does this on GitHub: it runs on pull requests, pushes to `main` and on demand, tests against the pinned `sops`, and attaches the packages for Linux, Windows and macOS to the workflow run as artifacts.
+`.github/workflows/build.yml` does this on GitHub: it runs on pull requests, pushes to `main` and on demand, runs the tests described below, and attaches the packages for Linux, Windows and macOS to the workflow run as artifacts.
 
 ## Release
 
@@ -74,15 +74,36 @@ git tag v0.1.0-beta.1 && git push origin v0.1.0-beta.1
 
 A tag with a suffix after the version (`-beta.1`, `-rc.1`) is published as a pre-release; a plain `v0.1.0` as a normal release.
 
+The release runs the full build workflow first, so nothing is published unless every test passes. The tag has to match `version` in `src-tauri/tauri.conf.json`, because the package file names come from there; for a new version, change that one line, commit, then tag.
+
 The bundled `sops` version is pinned in `scripts/fetch-sops.sh`. The script verifies the release's checksums file with cosign and then the binary's SHA-256. [Renovate](https://docs.renovatebot.com) opens a pull request when a new `sops` release appears (`renovate.json`); the Renovate GitHub App has to be installed on the repository for that. `sops` is licensed under the MPL 2.0, and its licence text ships next to the binary.
 
 ## Test
+
+Backend, against your installed `sops` with throwaway keys in a temp folder (skipped when `sops` isn't installed):
 
 ```bash
 cargo test -p sops-env-core
 ```
 
-The end-to-end test runs against your installed `sops` with throwaway keys in a temp folder. It's skipped when `sops` isn't installed.
+UI, in the real app window through WebDriver (Linux and Windows; needs `tauri-driver` from `cargo install tauri-driver --locked` and, on Linux, the `webkit2gtk-driver` package):
+
+```bash
+node ui-tests/run.mjs target/release/sops-env
+```
+
+CI runs both on every pull request, plus:
+
+- the backend test against the oldest supported `sops` (3.10.0),
+- a smoke test that installs the built package on Linux, Windows and macOS and checks that the app starts and finds its bundled `sops`.
+
+A failed check repeats its error as an annotation on the run, readable without signing in.
+
+## Keeping it up to date
+
+- **Renovate** (`renovate.json`) opens pull requests on Monday mornings. Minor and patch updates come as one grouped pull request and merge themselves once CI is green; so does a new `sops` release, in its own pull request. Major updates wait for a manual merge.
+- **Audit** (`.github/workflows/audit.yml`) checks weekly for known vulnerabilities in the Rust and npm dependencies.
+- For auto-merge to be safe, protect `main` on GitHub and make the four `Build` jobs required checks.
 
 ## Where things are stored
 

@@ -64,7 +64,10 @@ impl EditHandoff {
     fn start(plaintext: String) -> Res<Self> {
         let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
         listener.set_nonblocking(true).map_err(|e| e.to_string())?;
-        let addr = listener.local_addr().map_err(|e| e.to_string())?.to_string();
+        let addr = listener
+            .local_addr()
+            .map_err(|e| e.to_string())?
+            .to_string();
         let token = random_token();
         let done = Arc::new(AtomicBool::new(false));
         let (flag, expected) = (done.clone(), token.clone());
@@ -78,7 +81,8 @@ impl EditHandoff {
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
                 let mut got = Vec::new();
                 let mut byte = [0u8; 1];
-                while got.len() < 128 && matches!(stream.read(&mut byte), Ok(1)) && byte[0] != b'\n' {
+                while got.len() < 128 && matches!(stream.read(&mut byte), Ok(1)) && byte[0] != b'\n'
+                {
                     got.push(byte[0]);
                 }
                 if got == expected.as_bytes() {
@@ -87,7 +91,12 @@ impl EditHandoff {
                 }
             }
         });
-        Ok(Self { addr, token, done, thread: Some(thread) })
+        Ok(Self {
+            addr,
+            token,
+            done,
+            thread: Some(thread),
+        })
     }
 }
 
@@ -205,14 +214,19 @@ fn parse_identities(text: &str) -> Res<Vec<Identity>> {
         }
         let id = age::x25519::Identity::from_str(line)
             .map_err(|_| "That doesn't look like a valid age secret key.".to_string())?;
-        out.push(Identity { secret: line.to_string(), public: id.to_public().to_string() });
+        out.push(Identity {
+            secret: line.to_string(),
+            public: id.to_public().to_string(),
+        });
     }
     Ok(out)
 }
 
 fn read_key_file(path: &Path) -> (Vec<Identity>, Option<String>) {
     match std::fs::read_to_string(path) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (vec![], Some("No file found here".into())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            (vec![], Some("No file found here".into()))
+        }
         Err(e) => (vec![], Some(e.to_string())),
         Ok(text) => match parse_identities(&text) {
             Ok(ids) if ids.is_empty() => (ids, Some("No age key found in this file".into())),
@@ -242,14 +256,22 @@ fn utc_timestamp() -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = yoe + era * 400 + i64::from(m <= 2);
-    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", rem / 3600, rem % 3600 / 60, rem % 60)
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    )
 }
 
 /// Appends identities to the default keys.txt. Existing keys are never touched.
 fn append_to_default(identities: &[Identity]) -> Res<()> {
     let path = default_key_path();
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
-    let fresh: Vec<&Identity> = identities.iter().filter(|i| !existing.contains(&i.secret)).collect();
+    let fresh: Vec<&Identity> = identities
+        .iter()
+        .filter(|i| !existing.contains(&i.secret))
+        .collect();
     if fresh.is_empty() {
         return Ok(());
     }
@@ -261,7 +283,12 @@ fn append_to_default(identities: &[Identity]) -> Res<()> {
         text.push('\n');
     }
     for i in fresh {
-        text.push_str(&format!("# created: {}\n# public key: {}\n{}\n", utc_timestamp(), i.public, i.secret));
+        text.push_str(&format!(
+            "# created: {}\n# public key: {}\n{}\n",
+            utc_timestamp(),
+            i.public,
+            i.secret
+        ));
     }
     write_private(&path, &text)
 }
@@ -302,10 +329,20 @@ struct Output {
     stderr: String,
 }
 
-fn run(program: &Path, args: &[&str], env: &[(&str, String)], cwd: Option<&Path>, stdin: Option<&str>) -> std::io::Result<Output> {
+fn run(
+    program: &Path,
+    args: &[&str],
+    env: &[(&str, String)],
+    cwd: Option<&Path>,
+    stdin: Option<&str>,
+) -> std::io::Result<Output> {
     let mut cmd = Command::new(program);
     cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
-    cmd.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() });
+    cmd.stdin(if stdin.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    });
     for (k, v) in env {
         cmd.env(k, v);
     }
@@ -370,11 +407,21 @@ fn find_program(name: &str) -> Option<PathBuf> {
     None
 }
 
+/// Oldest sops release the end-to-end test passes with; CI tests against it.
+pub const MIN_SOPS_VERSION: (u32, u32) = (3, 10);
+
 #[derive(Serialize, Clone, Default)]
 struct SopsInfo {
     source: Option<&'static str>, // "bundled" | "system"
     path: Option<String>,
     version: Option<String>,
+    /// False when the version is older than `MIN_SOPS_VERSION`.
+    supported: bool,
+}
+
+fn version_supported(version: &str) -> bool {
+    let mut parts = version.split('.').map(|p| p.parse::<u32>().unwrap_or(0));
+    (parts.next().unwrap_or(0), parts.next().unwrap_or(0)) >= MIN_SOPS_VERSION
 }
 
 /// A sops binary shipped next to the app wins over the one on PATH.
@@ -390,16 +437,29 @@ fn detect_sops(bundled_dirs: &[PathBuf]) -> SopsInfo {
     }
     let version_re = Regex::new(r"sops\s+([\d.]+)").unwrap();
     for (source, path) in candidates {
-        let Ok(out) = run(&path, &["--version"], &[], None, None) else { continue };
+        let Ok(out) = run(&path, &["--version"], &[], None, None) else {
+            continue;
+        };
         if let (0, Some(m)) = (out.code, version_re.captures(&out.stdout)) {
             return SopsInfo {
                 source: Some(source),
                 path: Some(path.to_string_lossy().into_owned()),
+                supported: version_supported(&m[1]),
                 version: Some(m[1].to_string()),
             };
         }
     }
     SopsInfo::default()
+}
+
+/// A headless report of what the app would use, for packaging checks.
+pub fn self_check(bundled_dirs: &[PathBuf], app_version: &str) -> Value {
+    json!({
+        "appVersion": app_version,
+        "os": std::env::consts::OS,
+        "sops": detect_sops(bundled_dirs),
+        "defaultKeyPath": default_key_path().to_string_lossy(),
+    })
 }
 
 fn sops_error(stderr: &str) -> String {
@@ -414,12 +474,18 @@ fn sops_error(stderr: &str) -> String {
         "no master key was able to decrypt",
         "failed to load age identities",
     ]
-        .iter()
-        .any(|needle| lower.contains(needle))
+    .iter()
+    .any(|needle| lower.contains(needle))
     {
         return "None of your loaded keys can decrypt this file.".into();
     }
-    stderr.lines().map(str::trim).filter(|l| !l.is_empty()).last().unwrap_or("sops failed.").to_string()
+    stderr
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .last()
+        .unwrap_or("sops failed.")
+        .to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -442,10 +508,17 @@ pub fn parse_env(text: &str) -> Vec<Item> {
     lines
         .into_iter()
         .map(|line| match line.find('=') {
-            Some(eq) if eq > 0 && !line.trim().is_empty() && !line.trim_start().starts_with('#') => {
-                Item::Kv { k: line[..eq].trim().to_string(), v: line[eq + 1..].to_string() }
+            Some(eq)
+                if eq > 0 && !line.trim().is_empty() && !line.trim_start().starts_with('#') =>
+            {
+                Item::Kv {
+                    k: line[..eq].trim().to_string(),
+                    v: line[eq + 1..].to_string(),
+                }
             }
-            _ => Item::Raw { text: line.to_string() },
+            _ => Item::Raw {
+                text: line.to_string(),
+            },
         })
         .collect()
 }
@@ -486,7 +559,8 @@ fn file_recipients(text: &str) -> Vec<String> {
 }
 
 fn is_encrypted(text: &str) -> bool {
-    text.lines().any(|l| l.starts_with("sops_version=") || l.starts_with("sops_mac="))
+    text.lines()
+        .any(|l| l.starts_with("sops_version=") || l.starts_with("sops_mac="))
 }
 
 // ---------------------------------------------------------------------------
@@ -494,27 +568,43 @@ fn is_encrypted(text: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 fn find_sops_yaml(file: &Path) -> Option<PathBuf> {
-    file.parent()?.ancestors().map(|d| d.join(".sops.yaml")).find(|c| c.is_file())
+    file.parent()?
+        .ancestors()
+        .map(|d| d.join(".sops.yaml"))
+        .find(|c| c.is_file())
 }
 
 /// The age recipients the nearest .sops.yaml prescribes for this file, or
 /// `None` when there is no config or no matching rule.
 fn rule_recipients(file: &Path) -> Option<Vec<String>> {
     let cfg_path = find_sops_yaml(file)?;
-    let cfg: serde_yaml::Value = serde_yaml::from_str(&std::fs::read_to_string(&cfg_path).ok()?).ok()?;
-    let rel = file.strip_prefix(cfg_path.parent()?).ok()?.to_string_lossy().replace('\\', "/");
+    let cfg: serde_yaml::Value =
+        serde_yaml::from_str(&std::fs::read_to_string(&cfg_path).ok()?).ok()?;
+    let rel = file
+        .strip_prefix(cfg_path.parent()?)
+        .ok()?
+        .to_string_lossy()
+        .replace('\\', "/");
     fn collect(v: Option<&serde_yaml::Value>, out: &mut Vec<String>) {
         match v {
-            Some(serde_yaml::Value::String(s)) => {
-                out.extend(s.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string))
+            Some(serde_yaml::Value::String(s)) => out.extend(
+                s.split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string),
+            ),
+            Some(serde_yaml::Value::Sequence(seq)) => {
+                seq.iter().for_each(|x| collect(Some(x), out))
             }
-            Some(serde_yaml::Value::Sequence(seq)) => seq.iter().for_each(|x| collect(Some(x), out)),
             _ => {}
         }
     }
     for rule in cfg.get("creation_rules")?.as_sequence()? {
         if let Some(pattern) = rule.get("path_regex").and_then(|v| v.as_str()) {
-            if !Regex::new(pattern).map(|re| re.is_match(&rel)).unwrap_or(false) {
+            if !Regex::new(pattern)
+                .map(|re| re.is_match(&rel))
+                .unwrap_or(false)
+            {
                 continue;
             }
         }
@@ -532,14 +622,25 @@ fn rule_recipients(file: &Path) -> Option<Vec<String>> {
 // The app
 // ---------------------------------------------------------------------------
 
-const SKIP_DIRS: [&str; 8] = ["node_modules", ".git", "vendor", "dist", "build", "target", ".venv", "__pycache__"];
+const SKIP_DIRS: [&str; 8] = [
+    "node_modules",
+    ".git",
+    "vendor",
+    "dist",
+    "build",
+    "target",
+    ".venv",
+    "__pycache__",
+];
 
 fn looks_like_env(name: &str) -> bool {
     name != ".sops.yaml" && name.to_lowercase().split('.').any(|part| part == "env")
 }
 
 fn scan(dir: &Path, depth: u32, out: &mut Vec<PathBuf>) {
-    let Ok(read) = std::fs::read_dir(dir) else { return };
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return;
+    };
     let mut entries: Vec<_> = read.flatten().collect();
     entries.sort_by_key(|e| e.file_name());
     for entry in entries {
@@ -550,7 +651,11 @@ fn scan(dir: &Path, depth: u32, out: &mut Vec<PathBuf>) {
         let path = entry.path();
         if path.is_file() && looks_like_env(&name) {
             out.push(path);
-        } else if path.is_dir() && depth > 0 && !name.starts_with('.') && !SKIP_DIRS.contains(&name.as_str()) {
+        } else if path.is_dir()
+            && depth > 0
+            && !name.starts_with('.')
+            && !SKIP_DIRS.contains(&name.as_str())
+        {
             scan(&path, depth - 1, out);
         }
     }
@@ -576,7 +681,13 @@ impl App {
     pub fn new(folder: Option<PathBuf>, bundled_dirs: Vec<PathBuf>, editor_exe: PathBuf) -> Self {
         let config = load_config();
         let folder = folder
-            .or_else(|| config.last_folder.as_ref().map(PathBuf::from).filter(|p| p.is_dir()))
+            .or_else(|| {
+                config
+                    .last_folder
+                    .as_ref()
+                    .map(PathBuf::from)
+                    .filter(|p| p.is_dir())
+            })
             .unwrap_or_else(home_dir);
         let mut app = Self {
             sops: detect_sops(&bundled_dirs),
@@ -654,13 +765,26 @@ impl App {
         if let Some(entry) = self.config.book.iter().find(|b| b.key == public) {
             return entry.name.clone();
         }
-        format!("{}…{}", &public[..public.len().min(10)], &public[public.len().saturating_sub(4)..])
+        format!(
+            "{}…{}",
+            &public[..public.len().min(10)],
+            &public[public.len().saturating_sub(4)..]
+        )
     }
 
-    fn new_session_key(&mut self, label: &str, fallback: &str, identities: Vec<Identity>) -> String {
+    fn new_session_key(
+        &mut self,
+        label: &str,
+        fallback: &str,
+        identities: Vec<Identity>,
+    ) -> String {
         self.next_id += 1;
         let id = format!("session:{}", self.next_id);
-        let label = if label.trim().is_empty() { fallback } else { label.trim() };
+        let label = if label.trim().is_empty() {
+            fallback
+        } else {
+            label.trim()
+        };
         self.session_keys.push(KeySource {
             id: id.clone(),
             kind: "session",
@@ -674,7 +798,13 @@ impl App {
 
     // ---- sops ------------------------------------------------------------
 
-    fn sops(&self, args: &[&str], extra_env: &[(&str, String)], cwd: Option<&Path>, stdin: Option<&str>) -> Res<Output> {
+    fn sops(
+        &self,
+        args: &[&str],
+        extra_env: &[(&str, String)],
+        cwd: Option<&Path>,
+        stdin: Option<&str>,
+    ) -> Res<Output> {
         let missing = || "sops wasn't found next to the app or on your PATH.".to_string();
         let path = self.sops.path.as_ref().ok_or_else(missing)?;
         let mut env = Vec::new();
@@ -684,7 +814,11 @@ impl App {
         }
         env.extend(extra_env.iter().cloned());
         run(Path::new(path), args, &env, cwd, stdin).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound { missing() } else { e.to_string() }
+            if e.kind() == std::io::ErrorKind::NotFound {
+                missing()
+            } else {
+                e.to_string()
+            }
         })
     }
 
@@ -712,7 +846,11 @@ impl App {
         args.extend(DOTENV);
         args.extend(["--filename-override", &path]);
         let neutral = neutral_dir();
-        let cwd = if recipients.is_some() { neutral.as_deref() } else { file.parent() };
+        let cwd = if recipients.is_some() {
+            neutral.as_deref()
+        } else {
+            file.parent()
+        };
         let out = self.sops(&args, &[], cwd, Some(plaintext))?;
         if out.code != 0 {
             return Err(sops_error(&out.stderr));
@@ -726,14 +864,19 @@ impl App {
         if !is_encrypted(&current) {
             return match rule_recipients(file) {
                 Some(_) => self.encrypt_to(file, &plaintext, None),
-                None if recipients.is_empty() => Err("Choose at least one recipient to encrypt for.".into()),
+                None if recipients.is_empty() => {
+                    Err("Choose at least one recipient to encrypt for.".into())
+                }
                 None => self.encrypt_to(file, &plaintext, Some(recipients)),
             };
         }
         let handoff = EditHandoff::start(plaintext)?;
         // sops splits the editor command like a shell would, so quote the path
         // and use forward slashes, which Windows accepts too.
-        let editor = format!("\"{}\"", self.editor_exe.to_string_lossy().replace('\\', "/"));
+        let editor = format!(
+            "\"{}\"",
+            self.editor_exe.to_string_lossy().replace('\\', "/")
+        );
         let env = [
             ("SOPS_EDITOR", editor.clone()),
             ("EDITOR", editor),
@@ -767,7 +910,14 @@ impl App {
 
     fn git_ignored(&self, file: &Path) -> Option<bool> {
         let name = file.file_name()?.to_string_lossy().into_owned();
-        let out = run(self.git.as_ref()?, &["check-ignore", "-q", &name], &[], file.parent(), None).ok()?;
+        let out = run(
+            self.git.as_ref()?,
+            &["check-ignore", "-q", &name],
+            &[],
+            file.parent(),
+            None,
+        )
+        .ok()?;
         match out.code {
             0 => Some(true),
             1 => Some(false),
@@ -794,9 +944,18 @@ impl App {
         }
         let recipients = file_recipients(&text);
         let drift = rule_recipients(file).and_then(|expected| {
-            let missing: Vec<_> = expected.iter().filter(|k| !recipients.contains(k)).cloned().collect();
-            let extra: Vec<_> = recipients.iter().filter(|k| !expected.contains(k)).cloned().collect();
-            (!missing.is_empty() || !extra.is_empty()).then(|| json!({ "missing": missing, "extra": extra }))
+            let missing: Vec<_> = expected
+                .iter()
+                .filter(|k| !recipients.contains(k))
+                .cloned()
+                .collect();
+            let extra: Vec<_> = recipients
+                .iter()
+                .filter(|k| !expected.contains(k))
+                .cloned()
+                .collect();
+            (!missing.is_empty() || !extra.is_empty())
+                .then(|| json!({ "missing": missing, "extra": extra }))
         });
         let (status, note) = match recipients.iter().find_map(|r| self.label_for(r)) {
             Some(label) => ("ok", format!("Opens with {label}")),
@@ -848,17 +1007,25 @@ impl App {
             .iter()
             .map(|k| json!({ "key": k, "name": self.name_for(k), "mine": self.label_for(k).is_some() }))
             .collect();
-        Ok(json!({ "encrypted": true, "items": parse_env(&plaintext), "recipients": recipients, "hasRule": true }))
+        Ok(
+            json!({ "encrypted": true, "items": parse_env(&plaintext), "recipients": recipients, "hasRule": true }),
+        )
     }
 
     // ---- actions ---------------------------------------------------------
 
     /// Entry point for the UI: one action name plus a JSON body.
     pub fn handle(&mut self, action: &str, body: &Value) -> Res<Value> {
-        let text = |key: &str| body.get(key).and_then(Value::as_str).unwrap_or("").to_string();
+        let text = |key: &str| {
+            body.get(key)
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string()
+        };
         let file = || PathBuf::from(text("path"));
         let list = |key: &str| -> Vec<String> {
-            serde_json::from_value(body.get(key).cloned().unwrap_or(Value::Null)).unwrap_or_default()
+            serde_json::from_value(body.get(key).cloned().unwrap_or(Value::Null))
+                .unwrap_or_default()
         };
         match action {
             "state" => Ok(self.state()),
@@ -889,8 +1056,9 @@ impl App {
             "open" => self.open_file(&file()),
 
             "save" => {
-                let items: Vec<Item> = serde_json::from_value(body.get("items").cloned().unwrap_or(Value::Null))
-                    .map_err(|_| "The file content couldn't be read.".to_string())?;
+                let items: Vec<Item> =
+                    serde_json::from_value(body.get("items").cloned().unwrap_or(Value::Null))
+                        .map_err(|_| "The file content couldn't be read.".to_string())?;
                 self.save_file(&file(), &items, &list("recipients"))?;
                 Ok(json!({ "state": self.state(), "file": self.open_file(&file())? }))
             }
@@ -901,9 +1069,11 @@ impl App {
             }
 
             "applyRule" => {
-                let expected = rule_recipients(&file()).filter(|r| !r.is_empty()).ok_or_else(|| {
-                    "No .sops.yaml rule with age recipients matches this file.".to_string()
-                })?;
+                let expected = rule_recipients(&file())
+                    .filter(|r| !r.is_empty())
+                    .ok_or_else(|| {
+                        "No .sops.yaml rule with age recipients matches this file.".to_string()
+                    })?;
                 self.set_recipients(&file(), &expected)?;
                 Ok(self.state())
             }
@@ -915,15 +1085,24 @@ impl App {
                     return Err(format!("{e}."));
                 }
                 let as_text = path.to_string_lossy().into_owned();
-                if path == default_key_path() || self.config.key_paths.iter().any(|k| k.path == as_text) {
+                if path == default_key_path()
+                    || self.config.key_paths.iter().any(|k| k.path == as_text)
+                {
                     return Err("That key file is already loaded.".into());
                 }
                 let fallback = path
                     .file_stem()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "key".into());
-                let label = if text("label").trim().is_empty() { fallback } else { text("label").trim().to_string() };
-                self.config.key_paths.push(KeyPath { path: as_text, label });
+                let label = if text("label").trim().is_empty() {
+                    fallback
+                } else {
+                    text("label").trim().to_string()
+                };
+                self.config.key_paths.push(KeyPath {
+                    path: as_text,
+                    label,
+                });
                 self.save_config()?;
                 self.reload_keys();
                 Ok(self.state())
@@ -946,7 +1125,11 @@ impl App {
                     public: fresh.to_public().to_string(),
                 };
                 let public = identity.public.clone();
-                if body.get("persist").and_then(Value::as_bool).unwrap_or(false) {
+                if body
+                    .get("persist")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
                     append_to_default(&[identity])?;
                 } else {
                     self.new_session_key(&text("label"), "new", vec![identity]);
@@ -981,7 +1164,10 @@ impl App {
             }
 
             "bookAdd" => {
-                let (name, key) = (text("name").trim().to_string(), text("key").trim().to_string());
+                let (name, key) = (
+                    text("name").trim().to_string(),
+                    text("key").trim().to_string(),
+                );
                 if name.is_empty() {
                     return Err("Enter a name.".into());
                 }
@@ -1014,14 +1200,25 @@ mod tests {
     fn env_round_trip_keeps_comments_and_equals_signs() {
         let text = "A=1\n# note\n\nB=x=y z\n";
         let items = parse_env(text);
-        assert_eq!(items[3], Item::Kv { k: "B".into(), v: "x=y z".into() });
+        assert_eq!(
+            items[3],
+            Item::Kv {
+                k: "B".into(),
+                v: "x=y z".into()
+            }
+        );
         assert_eq!(serialize_env(&items).unwrap(), text);
     }
 
     #[test]
     fn serialize_rejects_bad_input() {
-        let kv = |k: &str, v: &str| Item::Kv { k: k.into(), v: v.into() };
-        assert!(serialize_env(&[kv("A", "1"), kv("A", "2")]).unwrap_err().contains("twice"));
+        let kv = |k: &str, v: &str| Item::Kv {
+            k: k.into(),
+            v: v.into(),
+        };
+        assert!(serialize_env(&[kv("A", "1"), kv("A", "2")])
+            .unwrap_err()
+            .contains("twice"));
         assert!(serialize_env(&[kv("1A", "1")]).is_err());
         assert!(serialize_env(&[kv("sops_x", "1")]).is_err());
         assert!(serialize_env(&[kv("A", "a\nb")]).is_err());
@@ -1029,12 +1226,32 @@ mod tests {
 
     #[test]
     fn env_file_names() {
-        for name in [".env", ".env.prod", "prod.env", ".env.prod.enc", "Secrets.ENV"] {
+        for name in [
+            ".env",
+            ".env.prod",
+            "prod.env",
+            ".env.prod.enc",
+            "Secrets.ENV",
+        ] {
             assert!(looks_like_env(name), "{name}");
         }
         for name in [".envrc", "environment.txt", ".sops.yaml"] {
             assert!(!looks_like_env(name), "{name}");
         }
+    }
+
+    #[test]
+    fn sops_version_floor() {
+        assert!(
+            version_supported("3.10.0")
+                && version_supported("3.13.3")
+                && version_supported("4.0.0")
+        );
+        assert!(
+            !version_supported("3.9.4")
+                && !version_supported("2.99.0")
+                && !version_supported("junk")
+        );
     }
 
     #[test]

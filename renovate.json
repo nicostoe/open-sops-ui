@@ -1,6 +1,13 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
+  "timezone": "Europe/Berlin",
+  "schedule": ["before 6am on monday"],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "automerge": true,
+    "schedule": ["before 6am on monday"]
+  },
   "customManagers": [
     {
       "customType": "regex",
@@ -13,10 +20,24 @@
   ],
   "packageRules": [
     {
-      "description": "Keep the bundled sops in its own, clearly named pull request",
+      "description": "Minor and patch updates arrive as one weekly pull request and merge themselves once CI is green",
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
+      "groupName": "non-major dependencies",
+      "automerge": true
+    },
+    {
+      "description": "Tauri's crates and its CLI must move together",
+      "matchPackageNames": ["/^tauri/", "/^@tauri-apps//"],
+      "matchUpdateTypes": ["major"],
+      "groupName": "tauri"
+    },
+    {
+      "description": "The bundled sops gets its own pull request; CI tests the app against it on every platform",
       "matchPackageNames": ["getsops/sops"],
+      "groupName": null,
       "commitMessageTopic": "bundled sops",
-      "labels": ["sops"]
+      "labels": ["sops"],
+      "automerge": true
     }
   ]
 }

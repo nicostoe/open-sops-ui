@@ -10,10 +10,13 @@ A Tauri 2 desktop app for SOPS-encrypted env files. See [README.md](README.md) f
   - `src/bin/edit-helper.rs`: test-only stand-in for the app's editor mode.
 - `src-tauri/`: the desktop shell. `src/main.rs` wires one `api` command to `App::handle`. `tauri.conf.json` holds window, CSP and bundle settings; `capabilities/default.json` the permissions.
 - `ui/`: the frontend. `index.html`, `style.css`, `app.js`. Vanilla JS, no bundler, no dependencies.
-- `.github/workflows/build.yml`: on pull requests and pushes to `main`. Fetches the pinned sops, runs the backend tests against it and builds packages on Linux, Windows and macOS runners. Uploads artifacts only.
-- `.github/workflows/release.yml`: on `v*` tags. Builds every package twice (plain, and `-with-sops` using `src-tauri/tauri.sops.conf.json`) and publishes a GitHub release. A tag with a `-suffix` becomes a pre-release.
+- `ui-tests/run.mjs`: UI test that drives the real window through WebDriver. Plain Node, no dependencies.
+- `.github/workflows/build.yml`: on pull requests and pushes to `main`, and called by the release workflow. Runs every test and builds all packages on Linux, Windows and macOS runners.
+- `.github/workflows/release.yml`: on `v*` tags. Checks the tag against `tauri.conf.json`, calls `build.yml`, then publishes a GitHub release. A tag with a `-suffix` becomes a pre-release.
+- `.github/workflows/audit.yml`: weekly `cargo audit` and `npm audit`.
 - `scripts/fetch-sops.sh`: downloads the pinned sops into `vendor/sops/` (git-ignored) and verifies it with cosign and SHA-256. The `SOPS_VERSION` line carries a Renovate comment; keep its format, `renovate.json` matches it with a regex.
-- `scripts/collect-bundles.sh`: copies built packages into one folder with clean names.
+- `scripts/smoke-test.sh`: installs the built package and runs `sops-env --self-check` (CI only; it installs the app).
+- `scripts/collect-bundles.sh`, `scripts/ci-annotate.sh`: CI helpers for package names and public failure annotations.
 - `app-icon.svg`: icon source. Regenerate with `npx tauri icon app-icon.svg`, then delete `src-tauri/icons/android` and `ios`.
 
 ## Commands
@@ -51,6 +54,11 @@ npm run build
 
 ## Testing
 
-- Backend: `cargo test -p sops-env-core`. Set `SOPS_ENV_TEST_EDITOR` to the built desktop binary to run the same flow through its editor mode.
-- The test sets `XDG_CONFIG_HOME` to a temp folder. Do the same when running the app by hand, so the real `keys.txt` and config are never touched.
-- There are no automated UI tests. Windows and macOS builds have not been run.
+The project is kept up to date by Renovate with auto-merge, so the tests are the safety net. Every change needs a test that would fail without it.
+
+- **Backend:** `cargo test -p sops-env-core`. `tests/flow.rs` is one end-to-end flow against a real sops; extend it when you add or change an action. Set `SOPS_ENV_TEST_EDITOR` to the built desktop binary to run the same flow through its editor mode.
+- **UI:** `node ui-tests/run.mjs target/release/sops-env` (needs `tauri-driver` and a native WebDriver on `PATH`). Extend it when you change `ui/` or add a flow. Native file dialogs can't be driven; pass the folder as an argument instead.
+- **Packages:** `sops-env --self-check [file]` reports as JSON which sops the app would use, without opening a window. `scripts/smoke-test.sh` relies on it.
+- **sops versions:** CI tests the pinned version on all platforms and the oldest supported one on Linux. The floor is `MIN_SOPS_VERSION` in `core/src/lib.rs` and in `build.yml`; change both together, and the README.
+- Tests set `XDG_CONFIG_HOME` (and `AppData`) to a temp folder. Do the same when running the app by hand, so the real `keys.txt` and config are never touched.
+- Not covered: the UI on Windows and macOS, native dialogs, the clipboard, and the `.rpm` and `.msi` packages.

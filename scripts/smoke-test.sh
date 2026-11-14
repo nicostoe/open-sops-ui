@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Installs the packages built for one target and checks, without opening a
+# window, that the installed app starts and finds the sops binary it shipped.
+#
+# Usage: scripts/smoke-test.sh <rust-target-triple>
+# Meant for CI: it installs the app on the machine it runs on.
+set -euo pipefail
+
+target="${1:?usage: smoke-test.sh <rust-target-triple>}"
+src="target/$target/release/bundle"
+report="$(mktemp)"
+
+check() { # <label> <command...>
+  local label="$1"; shift
+  rm -f "$report"
+  "$@" --self-check "$report" >/dev/null || { echo "smoke-test: $label: self-check failed" >&2; exit 1; }
+  if ! grep -q '"source": "bundled"' "$report"; then
+    echo "smoke-test: $label: the app didn't pick its bundled sops:" >&2
+    cat "$report" >&2
+    exit 1
+  fi
+  echo "smoke-test: $label: ok ($(grep '"version"' "$report" | tr -d ' ,'))"
+}
+
+first() { ls "$@" 2>/dev/null | head -n 1; }
+
+case "$target" in
+  *-linux-*)
+    sudo dpkg -i "$(first "$src"/deb/*.deb)"
+    check "deb" sops-env
+    appimage="$(first "$src"/appimage/*.AppImage)"
+    chmod +x "$appimage"
+    check "AppImage" "$appimage" --appimage-extract-and-run
+    ;;
+  *-apple-darwin)
+    mount="$(mktemp -d)"
+    hdiutil attach "$(first "$src"/dmg/*.dmg)" -nobrowse -quiet -mountpoint "$mount"
+    trap 'hdiutil detach "$mount" -quiet || true' EXIT
+    check "dmg" "$mount/Sops Env.app/Contents/MacOS/sops-env"
+    ;;
+  *-windows-*)
+    setup="$(cygpath -w "$(first "$src"/nsis/*.exe)")"
+    powershell -NoProfile -Command "Start-Process -Wait -FilePath '$setup' -ArgumentList '/S'"
+    report="$(cygpath -w "$report")"
+    check "setup.exe" "$LOCALAPPDATA/Sops Env/sops-env.exe"
+    ;;
+  *) echo "smoke-test: unsupported target: $target" >&2; exit 1 ;;
+esac

@@ -1,0 +1,29 @@
+name: Audit
+
+# Weekly check for known vulnerabilities in dependencies. A failed run means
+# an advisory affects a dependency in Cargo.lock or package-lock.json.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 5 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Known vulnerabilities
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: true
+      - name: Rust dependencies
+        run: |
+          command -v cargo-audit >/dev/null || cargo install cargo-audit --locked
+          cargo audit
+      - name: npm dependencies
+        if: always()
+        run: npm audit --audit-level=high

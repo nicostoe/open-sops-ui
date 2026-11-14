@@ -1,18 +1,29 @@
 name: Build
 
+# Tests and packages the app on every platform. The release workflow calls
+# this same file, so nothing is published that didn't pass these checks.
 on:
   workflow_dispatch:
+  workflow_call:
   pull_request:
   push:
     branches: [main]
-    tags: ["v*"]
 
 permissions:
   contents: read
 
 concurrency:
-  group: build-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # Oldest sops release the app supports; keep in step with MIN_SOPS_VERSION
+  # in core/src/lib.rs.
+  MIN_SOPS_VERSION: v3.10.0
 
 jobs:
   build:
@@ -38,12 +49,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Linux build dependencies
+      - name: Install Linux build and test dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev librsvg2-dev \
-            build-essential libssl-dev libxdo-dev file
+            build-essential libssl-dev libxdo-dev file webkit2gtk-driver xvfb
 
       - uses: actions/setup-node@v4
         with:
@@ -57,42 +68,59 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+          cache-all-crates: true
 
       - uses: sigstore/cosign-installer@v4.1.3
 
       - run: npm ci
 
+      - name: Check script syntax
+        run: |
+          node --check ui/app.js
+          node --check ui-tests/run.mjs
+          bash -n scripts/*.sh
+
       # Tests run against the pinned sops, so a version bump is checked on
       # every platform before it's merged.
       - name: Download and verify the pinned sops
-        shell: bash
         run: |
           scripts/fetch-sops.sh ${{ matrix.target }}
           echo "$GITHUB_WORKSPACE/vendor/sops" >> "$GITHUB_PATH"
 
-      # On failure the panic text is repeated as an annotation, because job
-      # logs can only be read when signed in.
       - name: Test backend
-        shell: bash
-        run: |
-          set -o pipefail
-          if ! cargo test -p sops-env-core 2>&1 | tee test.log; then
-            msg="$(grep -A8 -E 'panicked|^error' test.log | head -40 | sed 's/%/%25/g' | awk '{ printf "%s%%0A", $0 }')"
-            echo "::error title=Backend tests failed::$msg"
-            exit 1
-          fi
+        run: scripts/ci-annotate.sh "Backend tests failed" cargo test -p sops-env-core
 
-      - name: Build app
-        run: npm run build -- --target ${{ matrix.target }}
+      - name: Test backend against the oldest supported sops
+        if: runner.os == 'Linux'
+        run: |
+          SOPS_SKIP_COSIGN=1 SOPS_VERSION_OVERRIDE="$MIN_SOPS_VERSION" SOPS_OUT_DIR="$RUNNER_TEMP/sops-min" \
+            scripts/fetch-sops.sh ${{ matrix.target }}
+          PATH="$RUNNER_TEMP/sops-min:$PATH" scripts/ci-annotate.sh "Backend tests failed with $MIN_SOPS_VERSION" \
+            cargo test -p sops-env-core --test flow
+
+      - name: Build packages with sops included
+        run: |
+          npm run build -- --target ${{ matrix.target }} --config src-tauri/tauri.sops.conf.json
+          scripts/collect-bundles.sh ${{ matrix.target }} dist -with-sops
+
+      - name: Install the package and check it finds its sops
+        run: scripts/ci-annotate.sh "Package smoke test failed" scripts/smoke-test.sh ${{ matrix.target }}
+
+      # WebDriver exists for WebKitGTK and WebView2 only; this runs on Linux.
+      - name: Test the UI in the real window
+        if: runner.os == 'Linux'
+        run: |
+          command -v tauri-driver >/dev/null || cargo install tauri-driver --locked
+          scripts/ci-annotate.sh "UI test failed" \
+            xvfb-run -a node ui-tests/run.mjs target/${{ matrix.target }}/release/sops-env
+
+      - name: Build packages without sops
+        run: |
+          npm run build -- --target ${{ matrix.target }}
+          scripts/collect-bundles.sh ${{ matrix.target }} dist
 
       - uses: actions/upload-artifact@v4
         with:
-          name: sops-env-${{ matrix.target }}
+          name: packages-${{ matrix.target }}
           if-no-files-found: error
-          path: |
-            target/${{ matrix.target }}/release/bundle/deb/*.deb
-            target/${{ matrix.target }}/release/bundle/rpm/*.rpm
-            target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
-            target/${{ matrix.target }}/release/bundle/dmg/*.dmg
-            target/${{ matrix.target }}/release/bundle/msi/*.msi
-            target/${{ matrix.target }}/release/bundle/nsis/*.exe
+          path: dist/*

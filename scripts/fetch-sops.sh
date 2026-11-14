@@ -4,10 +4,14 @@
 #
 # Usage: scripts/fetch-sops.sh <rust-target-triple>
 # Set SOPS_SKIP_COSIGN=1 to skip the signature check when cosign isn't
-# installed (local use only; the SHA-256 check still runs).
+# installed, or for old releases signed in a different format (tests only;
+# the SHA-256 check still runs).
 set -euo pipefail
 
 SOPS_VERSION="v3.13.3" # renovate: datasource=github-releases depName=getsops/sops
+
+# Tests against other versions set these; release builds never do.
+SOPS_VERSION="${SOPS_VERSION_OVERRIDE:-$SOPS_VERSION}"
 
 target="${1:?usage: fetch-sops.sh <rust-target-triple>}"
 case "$target" in
@@ -21,7 +25,7 @@ case "$target" in
 esac
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-out="$root/vendor/sops"
+out="${SOPS_OUT_DIR:-$root/vendor/sops}"
 base="https://github.com/getsops/sops/releases/download/${SOPS_VERSION}"
 checksums="sops-${SOPS_VERSION}.checksums.txt"
 bundle="sops-${SOPS_VERSION}.checksums.sigstore.json"
@@ -65,4 +69,4 @@ mkdir -p "$out"
 mv "$asset" "$out/$name"
 mv sops-LICENSE.txt "$out/sops-LICENSE.txt"
 chmod +x "$out/$name"
-echo "fetch-sops: ${SOPS_VERSION} for $target is in vendor/sops/"
+echo "fetch-sops: ${SOPS_VERSION} for $target is in $out"

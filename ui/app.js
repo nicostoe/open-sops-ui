@@ -68,10 +68,13 @@ function setState(s) {
   const hasKey = S.keys.some((k) => k.pubs.length);
   $("#keysDot").className = hasKey ? "" : "dot";
   const banner = $("#banner");
-  banner.style.display = S.sops.path ? "none" : "block";
+  banner.style.display = S.sops.path && S.sops.supported ? "none" : "block";
   const brew = S.os === "darwin" ? ` (<span class="mono">brew install sops</span>)` : "";
-  banner.innerHTML = `sops wasn't found. Install it${brew} from <span class="mono">github.com/getsops/sops/releases</span>` +
-    (S.appDir ? `, or put the sops binary in <span class="mono">${esc(S.appDir)}</span>` : "") + `. Then restart this app.`;
+  const from = `from <span class="mono">github.com/getsops/sops/releases</span>`;
+  banner.innerHTML = S.sops.path
+    ? `sops ${esc(S.sops.version)} is too old; saving may fail. Install sops 3.10 or newer${brew} ${from}, then restart this app.`
+    : `sops wasn't found. Install it${brew} ${from}` +
+      (S.appDir ? `, or put the sops binary in <span class="mono">${esc(S.appDir)}</span>` : "") + `. Then restart this app.`;
   renderFiles();
 }
 function isDirty() {
