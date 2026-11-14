@@ -70,8 +70,17 @@ jobs:
           scripts/fetch-sops.sh ${{ matrix.target }}
           echo "$GITHUB_WORKSPACE/vendor/sops" >> "$GITHUB_PATH"
 
+      # On failure the panic text is repeated as an annotation, because job
+      # logs can only be read when signed in.
       - name: Test backend
-        run: cargo test -p sops-env-core
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! cargo test -p sops-env-core 2>&1 | tee test.log; then
+            msg="$(grep -A8 -E 'panicked|^error' test.log | head -40 | sed 's/%/%25/g' | awk '{ printf "%s%%0A", $0 }')"
+            echo "::error title=Backend tests failed::$msg"
+            exit 1
+          fi
 
       - name: Build app
         run: npm run build -- --target ${{ matrix.target }}
