@@ -1,0 +1,15 @@
+[package]
+name = "sops-env"
+version = "0.1.0"
+edition = "2021"
+description = "Desktop UI for SOPS-encrypted env files"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde_json = "1"
+sops-env-core = { path = "../core" }
+tauri = { version = "2", features = [] }
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-dialog = "2"

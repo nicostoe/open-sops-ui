@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sops Env</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <span class="title"><span data-ic="lock"></span>Sops env</span>
+  <button class="btn ghost folder mono" id="folderBtn" title="Change folder"></button>
+  <span class="spacer"></span>
+  <button class="btn ghost" id="keysBtn"><span data-ic="key"></span>Keys<span id="keysDot"></span></button>
+  <button class="btn ghost" id="recBtn"><span data-ic="users"></span>Recipients</button>
+  <button class="btn icon" id="themeBtn"></button>
+</header>
+<div id="banner"></div>
+<main>
+  <aside id="files"></aside>
+  <section id="editor"></section>
+</main>
+<dialog id="dlg"></dialog>
+<dialog id="dlg2"></dialog>
+<div id="toast" role="status"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
