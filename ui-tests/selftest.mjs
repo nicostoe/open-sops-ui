@@ -41,7 +41,10 @@ mkdirSync(config, { recursive: true });
 writeFileSync(envFile, ORIGINAL);
 
 // The app, its web view and sops keep their data here instead of the real profile.
-const env = { ...process.env, XDG_CONFIG_HOME: config, XDG_DATA_HOME: join(root, "data"), AppData: config };
+const env = { ...process.env, XDG_CONFIG_HOME: config, XDG_DATA_HOME: join(root, "data") };
+// Windows variable names ignore case; drop the inherited spelling so ours is the only one.
+for (const name of Object.keys(env)) if (name.toLowerCase() === "appdata") delete env[name];
+env.APPDATA = config;
 delete env.SOPS_AGE_KEY;
 delete env.SOPS_AGE_KEY_FILE;
 
