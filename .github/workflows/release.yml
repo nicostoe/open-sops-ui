@@ -14,7 +14,7 @@ jobs:
     name: Check the version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Package file names carry the version from tauri.conf.json, so a tag
       # that disagrees would publish mislabelled files.
       - name: Tag must match src-tauri/tauri.conf.json

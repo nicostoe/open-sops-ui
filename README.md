@@ -124,7 +124,7 @@ Not covered by any test: native file dialogs, the clipboard, the `.msi` installe
 
 ## Keeping it up to date
 
-- **Renovate** (`renovate.json`) opens pull requests on Monday mornings. Minor and patch updates come as one grouped pull request and merge themselves once CI is green; so does a new `sops` release, in its own pull request. Major updates wait for a manual merge.
+- **Renovate** (`renovate.json`) opens pull requests on Monday mornings. It keeps them rebased on `main`, so their checks always reflect the current code. Minor and patch updates come as one grouped pull request and merge themselves once CI is green; so does a new `sops` release, in its own pull request. Major updates wait for a manual merge.
 - **Audit** (`.github/workflows/audit.yml`) checks weekly for known vulnerabilities in the Rust and npm dependencies.
 - For auto-merge to be safe, protect `main` on GitHub and make the four `Build` jobs required checks.
 
