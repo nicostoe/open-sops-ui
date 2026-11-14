@@ -9,6 +9,8 @@
 set -euo pipefail
 
 packages="${1:?usage: distro-test.sh <folder-with-packages> <output-folder>}"
+# apt only treats an argument as a file when it contains a slash-rooted or ./ path.
+packages="$(cd "$packages" && pwd)"
 out="${2:?usage: distro-test.sh <folder-with-packages> <output-folder>}"
 
 if command -v apt-get >/dev/null 2>&1; then
