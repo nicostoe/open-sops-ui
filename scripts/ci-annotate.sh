@@ -14,5 +14,5 @@ if "$@" 2>&1 | tee "$log"; then
 fi
 message="$(grep -v -E '^\s*(Compiling|Downloaded|Downloading|Finished|Running)' "$log" | tail -n 30 \
   | sed 's/%/%25/g' | awk '{ printf "%s%%0A", $0 }')"
-echo "::error title=${title}::${message}"
+echo "::error title=${title}::${message:-The command failed without printing anything.}"
 exit 1

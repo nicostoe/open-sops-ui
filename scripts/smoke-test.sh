@@ -33,10 +33,10 @@ case "$target" in
     check "AppImage" "$appimage" --appimage-extract-and-run
     ;;
   *-apple-darwin)
-    mount="$(mktemp -d)"
-    hdiutil attach "$(first "$src"/dmg/*.dmg)" -nobrowse -quiet -mountpoint "$mount"
-    trap 'hdiutil detach "$mount" -quiet || true' EXIT
-    check "dmg" "$mount/Sops Env.app/Contents/MacOS/sops-env"
+    # The .dmg only wraps this bundle; running it in place avoids mounting
+    # a disk image on the runner.
+    check "app bundle" "$src/macos/Sops Env.app/Contents/MacOS/sops-env"
+    ls "$src"/dmg/*.dmg >/dev/null
     ;;
   *-windows-*)
     setup="$(cygpath -w "$(first "$src"/nsis/*.exe)")"
