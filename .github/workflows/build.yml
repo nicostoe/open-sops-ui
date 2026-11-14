@@ -51,7 +51,7 @@ jobs:
             target: x86_64-apple-darwin
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Linux build and test dependencies
         if: runner.os == 'Linux'
@@ -177,7 +177,7 @@ jobs:
             dnf install -y -q git tar xz gzip
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v4
         with:
@@ -222,7 +222,7 @@ jobs:
             os: windows-2022
             target: x86_64-pc-windows-msvc
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v4
         with:
