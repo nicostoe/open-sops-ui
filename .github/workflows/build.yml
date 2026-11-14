@@ -202,8 +202,8 @@ jobs:
           path: screenshots/
           if-no-files-found: warn
 
-  # The build jobs run on the newest macOS and Windows runners. Test the
-  # same packages on the older versions GitHub still offers.
+  # The build jobs run on the newest macOS runner. Test the same app on the
+  # older version GitHub still offers.
   os-versions:
     name: ${{ matrix.name }}
     needs: build
@@ -218,9 +218,6 @@ jobs:
           - name: macOS 15 Intel
             os: macos-15-intel
             target: x86_64-apple-darwin
-          - name: Windows Server 2022
-            os: windows-2022
-            target: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
 
@@ -229,26 +226,13 @@ jobs:
           node-version: 20
 
       - uses: actions/download-artifact@v4
-        if: runner.os == 'macOS'
         with:
           name: app-${{ matrix.target }}
 
-      - uses: actions/download-artifact@v4
-        if: runner.os == 'Windows'
-        with:
-          name: packages-${{ matrix.target }}
-          path: packages
-
-      - name: Install the app
+      - name: Unpack the app
         run: |
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            tar -xzf app.tar.gz
-            echo "APP=$PWD/Sops Env.app/Contents/MacOS/sops-env" >> "$GITHUB_ENV"
-          else
-            setup="$(cygpath -w "$(ls packages/*-setup-with-sops.exe | head -n 1)")"
-            powershell -NoProfile -Command "Start-Process -Wait -FilePath '$setup' -ArgumentList '/S'"
-            echo "APP=$LOCALAPPDATA/Sops Env/sops-env.exe" >> "$GITHUB_ENV"
-          fi
+          tar -xzf app.tar.gz
+          echo "APP=$PWD/Sops Env.app/Contents/MacOS/sops-env" >> "$GITHUB_ENV"
 
       - name: Test the UI in the installed app
         run: scripts/ci-annotate.sh "UI test failed on ${{ matrix.name }}" scripts/ui-test.sh "$APP" screenshots

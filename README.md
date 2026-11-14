@@ -13,6 +13,20 @@ Decrypted values are held in memory only. The app makes no network requests.
 - Warns when a file's recipients differ from the matching `.sops.yaml` rule.
 - Light and dark mode, following the system by default.
 
+## Tested on
+
+Every pull request and a weekly run install the app on these systems, click through it in its real window and check the result with `sops`:
+
+| System | Versions |
+| --- | --- |
+| Windows | Windows Server 2025 (x64), which shares its web view with Windows 11 |
+| macOS | 26 and 15, on Apple silicon and Intel |
+| Debian | 12 and 13 |
+| Ubuntu | 22.04, 24.04 and the current rolling release |
+| Fedora | current release |
+
+Other systems may work but aren't checked. The Linux packages need at least the library versions of Ubuntu 22.04 or Debian 12. Update this table together with the matrices in `.github/workflows/build.yml`.
+
 ## Install
 
 1. Download the package for your system from the [releases page](https://github.com/nicostoe/open-sops-ui/releases). Each one comes in two variants:
@@ -101,7 +115,7 @@ CI runs this on every pull request and once a week:
 | Backend against the pinned `sops` | Linux, Windows, macOS |
 | Backend against the oldest supported `sops` (3.10.0) | Linux |
 | Install the package, start the app, find the bundled `sops` | Ubuntu 22.04 (`.deb`, AppImage), Windows Server 2025, macOS 26 |
-| UI test with screenshots in the installed app | the three above, plus macOS 15 (Apple silicon and Intel) and Windows Server 2022 |
+| UI test with screenshots in the installed app | the three above, plus macOS 15 (Apple silicon and Intel) |
 | Install the package and run the UI test in a container | Debian 12 and 13, Ubuntu 22.04, 24.04 and rolling, Fedora (`.rpm`) |
 
 Each run offers one `screenshots` artifact with the pictures from every platform, and its summary lists which platforms passed. A failed check repeats its error as an annotation on the run, readable without signing in.
