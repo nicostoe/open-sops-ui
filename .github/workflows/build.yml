@@ -58,9 +58,18 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      - uses: sigstore/cosign-installer@v4
+
       - run: npm ci
 
-      # The end-to-end test needs sops and is skipped when it isn't installed.
+      # Tests run against the pinned sops, so a version bump is checked on
+      # every platform before it's merged.
+      - name: Download and verify the pinned sops
+        shell: bash
+        run: |
+          scripts/fetch-sops.sh ${{ matrix.target }}
+          echo "$GITHUB_WORKSPACE/vendor/sops" >> "$GITHUB_PATH"
+
       - name: Test backend
         run: cargo test -p sops-env-core
 

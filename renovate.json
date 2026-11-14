@@ -1,0 +1,22 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "The sops version bundled into release packages",
+      "managerFilePatterns": ["/^scripts/fetch-sops\\.sh$/"],
+      "matchStrings": [
+        "SOPS_VERSION=\"(?<currentValue>[^\"]+)\" # renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)"
+      ]
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Keep the bundled sops in its own, clearly named pull request",
+      "matchPackageNames": ["getsops/sops"],
+      "commitMessageTopic": "bundled sops",
+      "labels": ["sops"]
+    }
+  ]
+}

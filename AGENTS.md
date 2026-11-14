@@ -10,7 +10,10 @@ A Tauri 2 desktop app for SOPS-encrypted env files. See [README.md](README.md) f
   - `src/bin/edit-helper.rs`: test-only stand-in for the app's editor mode.
 - `src-tauri/`: the desktop shell. `src/main.rs` wires one `api` command to `App::handle`. `tauri.conf.json` holds window, CSP and bundle settings; `capabilities/default.json` the permissions.
 - `ui/`: the frontend. `index.html`, `style.css`, `app.js`. Vanilla JS, no bundler, no dependencies.
-- `.github/workflows/build.yml`: tests the backend and builds packages on Linux, Windows and macOS runners. It uploads artifacts only; it doesn't publish releases.
+- `.github/workflows/build.yml`: on pull requests and pushes to `main`. Fetches the pinned sops, runs the backend tests against it and builds packages on Linux, Windows and macOS runners. Uploads artifacts only.
+- `.github/workflows/release.yml`: on `v*` tags. Builds every package twice (plain, and `-with-sops` using `src-tauri/tauri.sops.conf.json`) and publishes a GitHub release. A tag with a `-suffix` becomes a pre-release.
+- `scripts/fetch-sops.sh`: downloads the pinned sops into `vendor/sops/` (git-ignored) and verifies it with cosign and SHA-256. The `SOPS_VERSION` line carries a Renovate comment; keep its format, `renovate.json` matches it with a regex.
+- `scripts/collect-bundles.sh`: copies built packages into one folder with clean names.
 - `app-icon.svg`: icon source. Regenerate with `npx tauri icon app-icon.svg`, then delete `src-tauri/icons/android` and `ios`.
 
 ## Commands

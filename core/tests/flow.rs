@@ -22,6 +22,7 @@ fn full_flow() {
     let demo = root.join("demo");
     std::fs::create_dir_all(&demo).unwrap();
     std::env::set_var("XDG_CONFIG_HOME", root.join("xdg"));
+    std::env::set_var("AppData", root.join("xdg")); // the config base on Windows
     std::env::set_var("SOPS_AGE_KEY_FILE", root.join("none.txt"));
     std::env::remove_var("SOPS_AGE_KEY");
 
