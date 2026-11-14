@@ -64,7 +64,8 @@ applyTheme();
 // ---- main view -----------------------------------------------------------
 function setState(s) {
   S = s;
-  $("#folderBtn").textContent = "‎" + S.folder;
+  // The button truncates on the left (direction: rtl); <bdi> keeps the path itself left-to-right.
+  $("#folderBtn").innerHTML = `<bdi>${esc(S.folder)}</bdi>`;
   const hasKey = S.keys.some((k) => k.pubs.length);
   $("#keysDot").className = hasKey ? "" : "dot";
   const banner = $("#banner");
@@ -378,3 +379,8 @@ try {
 } catch { /* closing simply won't ask */ }
 
 api("state").then((s) => { setState(s); renderEditor(); }).catch(fail);
+
+// Scripted self-test: loaded only when the app was started with SOPS_ENV_UI_TEST set.
+T.core.invoke("ui_test", { action: "config", body: {} }).then((on) => {
+  if (on) document.body.appendChild(Object.assign(document.createElement("script"), { src: "selftest.js" }));
+}).catch(() => {});

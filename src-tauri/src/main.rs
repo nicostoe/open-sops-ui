@@ -1,6 +1,8 @@
 // No console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod ui_test;
+
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -91,7 +93,7 @@ fn main() {
             app.manage(Shared(Mutex::new(App::new(folder, bundled, exe))));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![api])
+        .invoke_handler(tauri::generate_handler![api, ui_test::ui_test])
         .run(context)
         .expect("failed to start sops-env");
 }

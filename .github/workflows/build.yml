@@ -8,6 +8,10 @@ on:
   pull_request:
   push:
     branches: [main]
+  # A weekly run catches breakage from operating system, web view and
+  # distribution updates when the code itself hasn't changed.
+  schedule:
+    - cron: "0 4 * * 1"
 
 permissions:
   contents: read
@@ -54,7 +58,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev librsvg2-dev \
-            build-essential libssl-dev libxdo-dev file webkit2gtk-driver xvfb
+            build-essential libssl-dev libxdo-dev file xvfb imagemagick
 
       - uses: actions/setup-node@v4
         with:
@@ -77,7 +81,8 @@ jobs:
       - name: Check script syntax
         run: |
           node --check ui/app.js
-          node --check ui-tests/run.mjs
+          node --check ui/selftest.js
+          node --check ui-tests/selftest.mjs
           bash -n scripts/*.sh
 
       # Tests run against the pinned sops, so a version bump is checked on
@@ -106,13 +111,34 @@ jobs:
       - name: Install the package and check it finds its sops
         run: scripts/ci-annotate.sh "Package smoke test failed" scripts/smoke-test.sh ${{ matrix.target }}
 
-      # WebDriver exists for WebKitGTK and WebView2 only; this runs on Linux.
-      - name: Test the UI in the real window
-        if: runner.os == 'Linux'
+      # The app clicks through itself in its real window and takes a
+      # screenshot at each stage; see ui/selftest.js.
+      - name: Test the UI in the installed app
         run: |
-          command -v tauri-driver >/dev/null || cargo install tauri-driver --locked
-          scripts/ci-annotate.sh "UI test failed" \
-            xvfb-run -a node ui-tests/run.mjs target/${{ matrix.target }}/release/sops-env
+          case "$RUNNER_OS" in
+            Linux)   app=/usr/bin/sops-env ;;
+            macOS)   app="target/${{ matrix.target }}/release/bundle/macos/Sops Env.app/Contents/MacOS/sops-env" ;;
+            Windows) app="$LOCALAPPDATA/Sops Env/sops-env.exe" ;;
+          esac
+          scripts/ci-annotate.sh "UI test failed" scripts/ui-test.sh "$app" screenshots
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshots-${{ matrix.target }}
+          path: screenshots/
+          if-no-files-found: warn
+
+      # Other macOS versions test this exact bundle without rebuilding it.
+      - name: Pack the macOS app for the version tests
+        if: runner.os == 'macOS'
+        run: tar -czf app.tar.gz -C target/${{ matrix.target }}/release/bundle/macos "Sops Env.app"
+
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'macOS'
+        with:
+          name: app-${{ matrix.target }}
+          path: app.tar.gz
 
       - name: Build packages without sops
         run: |
@@ -124,3 +150,147 @@ jobs:
           name: packages-${{ matrix.target }}
           if-no-files-found: error
           path: dist/*
+
+  # The Linux packages are built on Ubuntu 22.04. Install them on other
+  # distributions and run the UI test there.
+  distros:
+    name: ${{ matrix.image }}
+    needs: build
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - debian:12
+          - debian:13
+          - ubuntu:22.04
+          - ubuntu:24.04
+          - ubuntu:rolling
+          - fedora:latest
+    steps:
+      - name: Install what the actions need
+        run: |
+          if command -v apt-get >/dev/null; then
+            apt-get update -q && apt-get install -y -q --no-install-recommends ca-certificates curl git tar xz-utils gzip
+          else
+            dnf install -y -q git tar xz gzip
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages-x86_64-unknown-linux-gnu
+          path: packages
+
+      - name: Install the package and test the UI
+        run: scripts/ci-annotate.sh "Test failed on ${{ matrix.image }}" scripts/distro-test.sh packages screenshots
+
+      - name: Name the screenshot artifact
+        if: always()
+        run: echo "SHOTS=screenshots-$(echo '${{ matrix.image }}' | tr ':/' '--')" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ${{ env.SHOTS }}
+          path: screenshots/
+          if-no-files-found: warn
+
+  # The build jobs run on the newest macOS and Windows runners. Test the
+  # same packages on the older versions GitHub still offers.
+  os-versions:
+    name: ${{ matrix.name }}
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS 15 Apple silicon
+            os: macos-15
+            target: aarch64-apple-darwin
+          - name: macOS 15 Intel
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+          - name: Windows Server 2022
+            os: windows-2022
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/download-artifact@v4
+        if: runner.os == 'macOS'
+        with:
+          name: app-${{ matrix.target }}
+
+      - uses: actions/download-artifact@v4
+        if: runner.os == 'Windows'
+        with:
+          name: packages-${{ matrix.target }}
+          path: packages
+
+      - name: Install the app
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            tar -xzf app.tar.gz
+            echo "APP=$PWD/Sops Env.app/Contents/MacOS/sops-env" >> "$GITHUB_ENV"
+          else
+            setup="$(cygpath -w "$(ls packages/*-setup-with-sops.exe | head -n 1)")"
+            powershell -NoProfile -Command "Start-Process -Wait -FilePath '$setup' -ArgumentList '/S'"
+            echo "APP=$LOCALAPPDATA/Sops Env/sops-env.exe" >> "$GITHUB_ENV"
+          fi
+
+      - name: Test the UI in the installed app
+        run: scripts/ci-annotate.sh "UI test failed on ${{ matrix.name }}" scripts/ui-test.sh "$APP" screenshots
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshots-${{ matrix.os }}
+          path: screenshots/
+          if-no-files-found: warn
+
+  # One download with every platform's screenshots, for reviewing how the
+  # app looks everywhere.
+  screenshots:
+    name: Collect screenshots
+    needs: [build, distros, os-versions]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: screenshots-*
+          path: all
+
+      - name: Summarise
+        run: |
+          {
+            echo "### UI test screenshots"
+            echo
+            echo "| Platform | Screenshots | Result |"
+            echo "| --- | --- | --- |"
+            for dir in all/*/; do
+              name="$(basename "$dir")"; name="${name#screenshots-}"
+              count="$(ls "$dir"/*.png 2>/dev/null | wc -l | tr -d ' ')"
+              result="$(grep -q '"ok": true' "$dir/result.json" 2>/dev/null && echo passed || echo failed)"
+              echo "| $name | $count | $result |"
+            done
+            echo
+            echo "Download the \`screenshots\` artifact of this run to look at them."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: all/

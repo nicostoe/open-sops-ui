@@ -86,18 +86,27 @@ Backend, against your installed `sops` with throwaway keys in a temp folder (ski
 cargo test -p sops-env-core
 ```
 
-UI, in the real app window through WebDriver (Linux and Windows; needs `tauri-driver` from `cargo install tauri-driver --locked` and, on Linux, the `webkit2gtk-driver` package):
+UI: the app clicks through itself in its real window, takes a screenshot at each stage, and the result is checked on disk with `sops`. It needs a display and, on Linux, ImageMagick for the screenshots:
 
 ```bash
-node ui-tests/run.mjs target/release/sops-env
+node ui-tests/selftest.mjs target/release/sops-env
 ```
 
-CI runs both on every pull request, plus:
+Screenshots land in `ui-test-output/`. The test uses its own temp folders; your keys and config aren't touched.
 
-- the backend test against the oldest supported `sops` (3.10.0),
-- a smoke test that installs the built package on Linux, Windows and macOS and checks that the app starts and finds its bundled `sops`.
+CI runs this on every pull request and once a week:
 
-A failed check repeats its error as an annotation on the run, readable without signing in.
+| Check | Where |
+| --- | --- |
+| Backend against the pinned `sops` | Linux, Windows, macOS |
+| Backend against the oldest supported `sops` (3.10.0) | Linux |
+| Install the package, start the app, find the bundled `sops` | Ubuntu 22.04 (`.deb`, AppImage), Windows Server 2025, macOS 26 |
+| UI test with screenshots in the installed app | the three above, plus macOS 15 (Apple silicon and Intel) and Windows Server 2022 |
+| Install the package and run the UI test in a container | Debian 12 and 13, Ubuntu 22.04, 24.04 and rolling, Fedora (`.rpm`) |
+
+Each run offers one `screenshots` artifact with the pictures from every platform, and its summary lists which platforms passed. A failed check repeats its error as an annotation on the run, readable without signing in.
+
+Not covered by any test: native file dialogs, the clipboard, the `.msi` installer, and macOS or Windows versions older than the ones above.
 
 ## Keeping it up to date
 
