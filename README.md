@@ -4,6 +4,11 @@ A desktop app for viewing, editing and encrypting env files with [SOPS](https://
 
 Decrypted values are held in memory only. The app makes no network requests.
 
+<p align="center">
+  <img src="docs/screenshots/editor-light.png" width="49%" alt="Editing an encrypted env file: one value changed, one variable added">
+  <img src="docs/screenshots/keys-dark.png" width="49%" alt="The keys dialog in dark mode">
+</p>
+
 ## What it does
 
 - Lists env files in a folder and shows which are encrypted, which of your keys opens each, and which are still plaintext.

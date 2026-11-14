@@ -26,19 +26,35 @@ mkdirSync(out, { recursive: true });
 // Empty it instead of removing it: the folder may be a mount point.
 for (const entry of readdirSync(out)) rmSync(join(out, entry), { recursive: true, force: true });
 
-const ORIGINAL = "DATABASE_URL=postgres://user:pw@db/app\n# payment\nSTRIPE_SECRET=sk_test_1\n";
-const EXPECTED = "DATABASE_URL=postgres://user:pw@db/app\n# payment\nSTRIPE_SECRET=sk_test_changed\nNEW_VAR=hello world\n";
+// A small, realistic project: the screenshots double as the README's pictures.
+const ORIGINAL = [
+  "DATABASE_URL=postgres://shop:s3cr3t-pw@db.internal:5432/shop",
+  "# payment",
+  "STRIPE_SECRET=sk_test_1",
+  "JWT_SIGNING_KEY=6f1e0c9a4b7d2e8f5a3c1b9d",
+  "SMTP_PASSWORD=mail-pass-1234",
+  "",
+].join("\n");
+const EXPECTED = ORIGINAL.replace("sk_test_1", "sk_test_changed") + "SENTRY_DSN=https://abc123@sentry.example/42\n";
 const EXPECTED_SHOTS = 11;
 const TIMEOUT_MS = 180_000;
 
-const root = mkdtempSync(join(tmpdir(), "sops-env-ui-"));
-const project = join(root, "project");
-const config = join(root, "config");
+// SOPS_ENV_UI_TEST_ROOT pins the folder, so screenshots show a tidy path
+// instead of a random temp name. It must not exist yet.
+const fixedRoot = process.env.SOPS_ENV_UI_TEST_ROOT;
+if (fixedRoot && existsSync(fixedRoot)) {
+  console.error(`${fixedRoot} already exists; SOPS_ENV_UI_TEST_ROOT must point to a new folder`);
+  process.exit(2);
+}
+const root = fixedRoot ? resolve(fixedRoot) : mkdtempSync(join(tmpdir(), "sops-env-ui-"));
+const project = join(root, "projects", "shop-api");
+const config = join(root, ".config");
 const keysFile = join(config, "sops", "age", "keys.txt");
-const envFile = join(project, ".env");
+const envFile = join(project, ".env.production");
 mkdirSync(project, { recursive: true });
 mkdirSync(config, { recursive: true });
 writeFileSync(envFile, ORIGINAL);
+writeFileSync(join(project, ".env.staging"), "DATABASE_URL=postgres://shop:dev@localhost:5432/shop_staging\nLOG_LEVEL=debug\n");
 
 // The app, its web view and sops keep their data here instead of the real profile.
 const env = { ...process.env, XDG_CONFIG_HOME: config, XDG_DATA_HOME: join(root, "data") };

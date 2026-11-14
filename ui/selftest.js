@@ -32,6 +32,8 @@
     el.dispatchEvent(new Event("input", { bubbles: true }));
   }
   async function shot(name) {
+    // A lingering toast from an earlier step would mislead in a still picture.
+    q("#toast").className = "";
     // Let the page paint what the last step changed before capturing it.
     await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
     await sleep(350);
@@ -50,7 +52,7 @@
   try {
     setTheme("light");
     await until("the file list", () => q("#files .file[data-i]"));
-    check(text("#files").includes(".env"), "the plaintext file is listed");
+    check(text("#files").includes(".env.production") && text("#files").includes(".env.staging"), "both env files are listed");
     check(text(".sopsinfo").startsWith("sops "), "the app found sops");
     check(q("#keysDot").className === "dot", "a missing key is flagged");
     await shot("01-start-without-key");
@@ -67,7 +69,7 @@
 
     await click("#files .file[data-i]");
     await until("the variables", () => q("#editor .row"));
-    check(document.querySelectorAll("#editor .row").length === 2, "both variables are shown");
+    check(document.querySelectorAll("#editor .row").length === 4, "all four variables are shown");
     check(text(".filehead").includes("Not encrypted yet"), "the file is shown as plaintext");
     await shot("04-plaintext-file");
 
@@ -82,15 +84,15 @@
     await click("#editor .row:nth-of-type(2) [data-a=eye]");
     await type("#editor .row:nth-of-type(2) .val", "sk_test_changed");
     await click("#addVar");
-    await type("#editor .row:nth-of-type(3) .k", "NEW_VAR");
-    await type("#editor .row:nth-of-type(3) .val", "hello world");
+    await type("#editor .row:nth-of-type(5) .k", "SENTRY_DSN");
+    await type("#editor .row:nth-of-type(5) .val", "https://abc123@sentry.example/42");
     await shows("#dirty", "Unsaved");
     check(q("#editor .row:nth-of-type(2)").classList.contains("changed"), "the edited row is marked");
-    check(q("#editor .row:nth-of-type(3)").classList.contains("added"), "the new row is marked");
+    check(q("#editor .row:nth-of-type(5)").classList.contains("added"), "the new row is marked");
     await shot("07-unsaved-changes");
     await click("#save");
     await shows("#dirty", "Saved");
-    check(document.querySelectorAll("#editor .row").length === 3, "three variables after saving");
+    check(document.querySelectorAll("#editor .row").length === 5, "five variables after saving");
 
     await click("#recBtn");
     await shows("#dlg", "You (default)");

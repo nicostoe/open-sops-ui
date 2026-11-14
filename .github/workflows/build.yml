@@ -169,12 +169,14 @@ jobs:
           - ubuntu:rolling
           - fedora:latest
     steps:
+      # libatomic: the Node build that setup-node downloads needs it, and bare
+      # container images don't ship it.
       - name: Install what the actions need
         run: |
           if command -v apt-get >/dev/null; then
-            apt-get update -q && apt-get install -y -q --no-install-recommends ca-certificates curl git tar xz-utils gzip
+            apt-get update -q && apt-get install -y -q --no-install-recommends ca-certificates curl git tar xz-utils gzip libatomic1
           else
-            dnf install -y -q git tar xz gzip
+            dnf install -y -q git tar xz gzip libatomic
           fi
 
       - uses: actions/checkout@v7
