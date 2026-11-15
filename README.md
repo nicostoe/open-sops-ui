@@ -147,3 +147,9 @@ Custom key paths, saved recipients and the last folder are stored in `sops-env/c
 
 - Only the dotenv format and age keys are supported (no PGP or cloud KMS, no YAML or JSON files).
 - Values are single-line; comments and blank lines are kept but not editable.
+
+## License
+
+[MIT](LICENSE).
+
+The `-with-sops` packages also contain the official `sops` binary, which is licensed under the [MPL 2.0](https://github.com/getsops/sops/blob/main/LICENSE); its licence text is installed next to it.
