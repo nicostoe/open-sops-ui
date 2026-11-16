@@ -27,7 +27,7 @@ defaults:
 env:
   # Oldest sops release the app supports; keep in step with MIN_SOPS_VERSION
   # in core/src/lib.rs.
-  MIN_SOPS_VERSION: v3.10.0
+  MIN_SOPS_VERSION: v3.11.0
 
 jobs:
   build:

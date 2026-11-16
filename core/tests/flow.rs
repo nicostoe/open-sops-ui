@@ -2,7 +2,6 @@
 //! Everything runs inside a temp folder; the user's own keys.txt is never read.
 use open_sops_ui_core::App;
 use serde_json::{json, Value};
-use std::path::PathBuf;
 
 fn pubs(state: &Value, kind: &str) -> Vec<String> {
     state["keys"]
@@ -37,11 +36,12 @@ fn full_flow() {
     std::env::remove_var("SOPS_AGE_KEY_FILE");
     std::env::remove_var("SOPS_AGE_KEY");
 
-    // OPEN_SOPS_UI_TEST_EDITOR lets the same test exercise the desktop binary's editor mode.
-    let helper = std::env::var_os("OPEN_SOPS_UI_TEST_EDITOR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_edit-helper")));
-    let mut app = App::new(Some(demo.clone()), vec![], helper.clone());
+    // Saving must never go through an editor, which would mean a temp file
+    // with decrypted content. With these set, a `sops edit` would fail.
+    std::env::set_var("SOPS_EDITOR", root.join("no-such-editor"));
+    std::env::set_var("EDITOR", root.join("no-such-editor"));
+
+    let mut app = App::new(Some(demo.clone()), vec![]);
     let state = app.handle("state", &json!({})).unwrap();
     if state["sops"]["path"].is_null() {
         eprintln!("sops not installed: skipping the end-to-end test");
@@ -228,7 +228,7 @@ fn full_flow() {
 
     // Fresh start with keys.txt removed: files are locked, opening explains why.
     std::fs::rename(&keys_txt, root.join("moved-keys.txt")).unwrap();
-    let mut app = App::new(Some(demo.clone()), vec![], helper);
+    let mut app = App::new(Some(demo.clone()), vec![]);
     let state = app.handle("state", &json!({})).unwrap();
     assert_eq!(state["book"][0]["name"], "Anna");
     assert_eq!(status(&state, "infra.env"), "locked");
@@ -263,9 +263,124 @@ fn full_flow() {
         .handle("addSessionKey", &json!({ "content": "hello" }))
         .is_err());
 
+    robustness_flow(&mut app, &root, &a);
     git_flow(&mut app, &root, &a);
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Files in other encodings, files changed behind the app's back, settings.
+fn robustness_flow(app: &mut App, root: &std::path::Path, key: &str) {
+    let dir = root.join("odd");
+    std::fs::create_dir_all(&dir).unwrap();
+    // What Windows PowerShell writes: UTF-16 with a byte order mark and CRLF.
+    let utf16: Vec<u8> = [0xFF, 0xFE]
+        .into_iter()
+        .chain(
+            "A=1\r\nNAME=Zo\u{eb}\r\n"
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes),
+        )
+        .collect();
+    std::fs::write(dir.join("utf16.env"), utf16).unwrap();
+    std::fs::write(dir.join("binary.env"), b"\x7fELF\x00\x01\x02\xff\xfe\x00").unwrap();
+    let state = app
+        .handle("setFolder", &json!({ "path": dir.to_string_lossy() }))
+        .unwrap();
+    assert_eq!(status(&state, "utf16.env"), "plain");
+    assert_eq!(status(&state, "binary.env"), "unreadable");
+
+    let p = dir.join("utf16.env").to_string_lossy().to_string();
+    let opened = app.handle("open", &json!({ "path": p })).unwrap();
+    assert_eq!(opened["encoding"], "UTF-16");
+    let items =
+        json!([{ "t": "kv", "k": "A", "v": "1" }, { "t": "kv", "k": "NAME", "v": "Zo\u{eb}" }]);
+    assert_eq!(opened["items"], items);
+    let saved = app
+        .handle(
+            "save",
+            &json!({ "path": p, "items": items, "recipients": [key], "rev": opened["rev"] }),
+        )
+        .unwrap();
+    assert_eq!(saved["file"]["items"], items);
+    assert!(
+        saved["file"]["encoding"].is_null(),
+        "the encrypted file is plain UTF-8"
+    );
+    assert!(std::fs::read_to_string(&p).unwrap().starts_with("A=ENC["));
+
+    // Someone else changes the file after it was opened here.
+    let mine = saved["file"]["rev"].clone();
+    let theirs = json!([{ "t": "kv", "k": "A", "v": "theirs" }, { "t": "kv", "k": "NAME", "v": "Zo\u{eb}" }, { "t": "kv", "k": "EXTRA", "v": "x" }]);
+    app.handle("save", &json!({ "path": p, "items": theirs }))
+        .unwrap();
+    let on_disk = std::fs::read(&p).unwrap();
+    let ours =
+        json!([{ "t": "kv", "k": "A", "v": "ours" }, { "t": "kv", "k": "NAME", "v": "Zo\u{eb}" }]);
+    let refused = app
+        .handle("save", &json!({ "path": p, "items": ours, "rev": mine }))
+        .unwrap();
+    assert_eq!(refused, json!({ "conflict": true }));
+    assert_eq!(
+        std::fs::read(&p).unwrap(),
+        on_disk,
+        "a refused save writes nothing"
+    );
+    let forced = app
+        .handle(
+            "save",
+            &json!({ "path": p, "items": ours, "rev": mine, "overwrite": true }),
+        )
+        .unwrap();
+    assert_eq!(
+        forced["file"]["items"], ours,
+        "overwriting saves exactly the user's version"
+    );
+    // With the current fingerprint, saving goes through without asking.
+    let again = app
+        .handle(
+            "save",
+            &json!({ "path": p, "items": theirs, "rev": forced["file"]["rev"] }),
+        )
+        .unwrap();
+    assert_eq!(again["file"]["items"], theirs);
+
+    // Saving a key only appends: what is already in keys.txt stays byte for byte.
+    let keys_txt = root.join("xdg/sops/age/keys.txt");
+    std::fs::create_dir_all(keys_txt.parent().unwrap()).unwrap();
+    let existing = "# my notes, kept as they are\r\nAGE-SECRET-KEY-NOT-A-REAL-ONE   \n\n# no newline at the end";
+    std::fs::write(&keys_txt, existing).unwrap();
+    let made = app
+        .handle("generateKey", &json!({ "persist": true }))
+        .unwrap();
+    let after = std::fs::read_to_string(&keys_txt).unwrap();
+    assert!(
+        after.starts_with(existing),
+        "existing content was rewritten"
+    );
+    let added = &after[existing.len()..];
+    assert!(
+        added.starts_with("\n# created: ")
+            && added.contains(made["pub"].as_str().unwrap())
+            && added.ends_with('\n')
+    );
+    assert_eq!(added.matches("AGE-SECRET-KEY-").count(), 1);
+    std::fs::remove_file(&keys_txt).unwrap();
+
+    // The clipboard setting has a default, validates and is stored.
+    assert_eq!(state["settings"]["clipboardClearSeconds"], 60);
+    let state = app
+        .handle("setSettings", &json!({ "clipboardClearSeconds": 15 }))
+        .unwrap();
+    assert_eq!(state["settings"]["clipboardClearSeconds"], 15);
+    assert!(app
+        .handle("setSettings", &json!({ "clipboardClearSeconds": 4000 }))
+        .is_err());
+    let fresh = App::new(Some(dir.clone()), vec![]);
+    assert_eq!(fresh.clipboard_clear_seconds(), 15);
+    app.handle("setSettings", &json!({ "clipboardClearSeconds": 0 }))
+        .unwrap();
+    assert_eq!(app.clipboard_clear_seconds(), 0);
 }
 
 /// Repositories, Git status, comparison with the last commit and .gitignore.

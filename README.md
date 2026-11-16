@@ -14,7 +14,10 @@ Decrypted values are held in memory only. The app makes no network requests.
 - Lists env files in a folder and shows which are encrypted, which of your keys opens each, and which are still plaintext.
 - Knows Git, where env files usually live: files are grouped by repository with its branch, marked when they differ from the last commit, and a comparison shows which variables were added, changed or removed, decrypted, where `git diff` only shows ciphertext.
 - Warns about plaintext secrets that Git would commit or already has, and can add a file to `.gitignore`.
-- Edits values in a table and saves through `sops edit`, so unchanged values stay byte-identical in Git.
+- Edits values in a table and saves each change through `sops` on its own, so unchanged values stay byte-identical in Git and nothing decrypted is written to disk, not even to a temp file.
+- Removes a copied value from the clipboard again after a time you choose in the settings (one minute by default).
+- Asks before overwriting a file that changed on disk after you opened it, for example through a Git pull.
+- Reads plaintext files in UTF-8, UTF-16 and Windows-1252; encrypted files are always written as UTF-8.
 - Loads age keys from the default location, from any number of custom key files, or pasted for the session only. A pasted or newly created key can be saved to the default location.
 - Manages who can decrypt a file, with a saved list of named public keys.
 - Warns when a file's recipients differ from the matching `.sops.yaml` rule.
@@ -38,7 +41,7 @@ Other systems may work but aren't checked. The Linux packages need at least the 
 
 1. Download the package for your system from the [releases page](https://github.com/nicostoe/open-sops-ui/releases). Each one comes in two variants:
    - `…-with-sops`: includes the official `sops` binary, nothing else to install.
-   - without the suffix: uses the `sops` 3.10 or newer on your `PATH`. Get it from [github.com/getsops/sops/releases](https://github.com/getsops/sops/releases).
+   - without the suffix: uses the `sops` 3.11 or newer on your `PATH`. Get it from [github.com/getsops/sops/releases](https://github.com/getsops/sops/releases).
 2. Install it:
 
    | OS | Package |
@@ -122,14 +125,14 @@ CI runs this on every pull request and once a week:
 | Check | Where |
 | --- | --- |
 | Backend against the pinned `sops` | Linux, Windows, macOS |
-| Backend against the oldest supported `sops` (3.10.0) | Linux |
+| Backend against the oldest supported `sops` (3.11.0) | Linux |
 | Install the package, start the app, find the bundled `sops` | Ubuntu 22.04 (`.deb`, AppImage), Windows Server 2025, macOS 26 |
 | UI test with screenshots in the installed app | the three above, plus macOS 15 (Apple silicon and Intel) |
 | Install the package and run the UI test in a container | Debian 12 and 13, Ubuntu 22.04, 24.04 and rolling, Fedora (`.rpm`) |
 
 Each run offers one `screenshots` artifact with the pictures from every platform, and its summary lists which platforms passed. A failed check repeats its error as an annotation on the run, readable without signing in.
 
-The backend tests also run the app's logic with Git unavailable. Not covered by any test: native file dialogs, the clipboard, the `.msi` installer, and macOS or Windows versions older than the ones above.
+The backend tests also run the app's logic with Git unavailable. Not covered by any test: native file dialogs, the `.msi` installer, and macOS or Windows versions older than the ones above.
 
 ## Keeping it up to date
 
@@ -145,7 +148,7 @@ The backend tests also run the app's logic with Git unavailable. Not covered by 
 | macOS | `$XDG_CONFIG_HOME/sops/age/keys.txt` or `~/Library/Application Support/sops/age/keys.txt` |
 | Windows | `%AppData%\sops\age\keys.txt` |
 
-Custom key paths, saved recipients and the last folder are stored in `open-sops-ui/config.json` next to the `sops` folder above. Secret keys are never written there.
+Custom key paths, saved recipients, recent folders and settings are stored in `open-sops-ui/config.json` next to the `sops` folder above. Secret keys are never written there.
 
 ## Limits
 

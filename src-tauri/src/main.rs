@@ -4,13 +4,91 @@
 mod ui_test;
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use open_sops_ui_core::App;
 use serde_json::Value;
 use tauri::Manager;
+use tauri_plugin_clipboard_manager::ClipboardExt;
 
 struct Shared(Mutex<App>);
+
+/// Tracks the secret the app last put on the clipboard, so it can be removed
+/// again: after the time set in the settings, or when the app closes.
+#[derive(Default)]
+struct Clipboard {
+    /// Counts copies; a timer only acts if nothing was copied after it started.
+    generation: AtomicU64,
+    pending: Mutex<Option<String>>,
+}
+
+/// Removes `secret` from the clipboard, but only if it is still there.
+/// Whatever the user copied elsewhere in the meantime is left alone.
+///
+/// Clipboard managers often restore the previous content when the clipboard
+/// becomes empty, which would bring the secret straight back. So after
+/// clearing, check again, and if it returned, replace it with a visible note
+/// instead: a manager keeps that as the newest entry.
+fn clear_if_still_there(app: &tauri::AppHandle, secret: &str) {
+    let holds_secret = || app.clipboard().read_text().ok().as_deref() == Some(secret);
+    if !holds_secret() {
+        return;
+    }
+    let _ = app.clipboard().clear();
+    std::thread::sleep(Duration::from_millis(600));
+    if holds_secret() {
+        let _ = app.clipboard().write_text(CLEARED_NOTE.to_string());
+    }
+}
+
+/// What the clipboard holds after a secret was removed and a clipboard
+/// manager wouldn't let it stay empty.
+const CLEARED_NOTE: &str = "(cleared by Open SOPS UI)";
+
+/// Copies text to the clipboard. The page has no clipboard access of its own;
+/// everything goes through here. A `secret` is removed again after the
+/// configured time. Returns that time in seconds, 0 if it stays.
+#[tauri::command(async)]
+fn copy(
+    app: tauri::AppHandle,
+    shared: tauri::State<'_, Shared>,
+    clipboard: tauri::State<'_, Clipboard>,
+    text: String,
+    secret: bool,
+) -> Result<u32, String> {
+    let failed = |_| "Couldn't copy to the clipboard.".to_string();
+    app.clipboard().write_text(text.clone()).map_err(failed)?;
+    let seconds = if secret {
+        shared
+            .0
+            .lock()
+            .map(|a| a.clipboard_clear_seconds())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let generation = clipboard.generation.fetch_add(1, Ordering::SeqCst) + 1;
+    *clipboard
+        .pending
+        .lock()
+        .map_err(|_| "The app hit an internal error. Restart it.".to_string())? =
+        (seconds > 0).then(|| text.clone());
+    if seconds > 0 {
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(seconds.into()));
+            let state = app.state::<Clipboard>();
+            if state.generation.load(Ordering::SeqCst) == generation {
+                clear_if_still_there(&app, &text);
+                if let Ok(mut pending) = state.pending.lock() {
+                    *pending = None;
+                }
+            }
+        });
+    }
+    Ok(seconds)
+}
 
 /// The single bridge between the UI and the backend. `async` moves the call
 /// off the main thread, so the window stays responsive while sops runs.
@@ -62,11 +140,6 @@ fn self_check(bundled: &[PathBuf], version: &str, out_file: Option<&String>) -> 
 }
 
 fn main() {
-    // `sops edit` starts this same binary as its editor; see the core crate.
-    if let Some(code) = open_sops_ui_core::run_as_editor_if_requested() {
-        std::process::exit(code);
-    }
-
     let context = tauri::generate_context!();
     let exe = std::env::current_exe().expect("the app's own path is unknown");
     let resource_dir =
@@ -89,11 +162,26 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .manage(Clipboard::default())
         .setup(move |app| {
-            app.manage(Shared(Mutex::new(App::new(folder, bundled, exe))));
+            app.manage(Shared(Mutex::new(App::new(folder, bundled))));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![api, ui_test::ui_test])
-        .run(context)
-        .expect("failed to start open-sops-ui");
+        .invoke_handler(tauri::generate_handler![api, copy, ui_test::ui_test])
+        .build(context)
+        .expect("failed to start open-sops-ui")
+        .run(|app, event| {
+            // Don't leave a copied secret behind when the app closes before its timer ran.
+            if let tauri::RunEvent::Exit = event {
+                let pending = app
+                    .state::<Clipboard>()
+                    .pending
+                    .lock()
+                    .ok()
+                    .and_then(|mut p| p.take());
+                if let Some(secret) = pending {
+                    clear_if_still_there(app, &secret);
+                }
+            }
+        });
 }

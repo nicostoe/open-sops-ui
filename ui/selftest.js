@@ -113,16 +113,25 @@
     check(q("#editor .row:nth-of-type(2)").classList.contains("changed"), "the edited row is marked");
     check(q("#editor .row:nth-of-type(5)").classList.contains("added"), "the new row is marked");
     await shot("07-unsaved-changes");
+
+    // Someone else changes the file while it is open here: saving must ask first.
+    const elsewhere = JSON.parse(cur.orig).map((i) => (i.k === "SMTP_PASSWORD" ? { ...i, v: "changed-elsewhere" } : i));
+    await api("save", { path: cur.path, items: elsewhere });
     await click("#save");
+    await shows("#dlg2", "changed outside this app");
+    check(text("#dirty").includes("Unsaved"), "a file changed on disk is not overwritten without asking");
+    await shot("08-changed-on-disk");
+    await click("#cfOverwrite");
     await shows("#dirty", "Saved");
     check(document.querySelectorAll("#editor .row").length === 5, "five variables after saving");
+    check(cur.items.find((i) => i.k === "SMTP_PASSWORD").v === "mail-pass-1234", "overwriting keeps the version shown in the app");
 
     await until("the modified mark", () => fileBtn(".env.production").querySelector(".gs")?.innerText === "M");
     await click("#changesBtn");
     await until("the changes", () => q("#dlg[open] .chg")); // [open]: a closed dialog keeps its old content
     check(kinds().join(", ") === "Changed STRIPE_SECRET, Added SENTRY_DSN", "the comparison lists exactly what changed since the commit");
     check(text("#dlg").includes("3 unchanged"), "unchanged variables are counted, not listed");
-    await shot("08-changes-since-commit");
+    await shot("09-changes-since-commit");
     await click("#chgReveal");
     await shows("#dlg", "sk_test_changed");
     check(text("#dlg").includes("sk_test_1"), "revealing shows the old and the new value");
@@ -130,13 +139,35 @@
 
     await click("#recBtn");
     await shows("#dlg", "You (default)");
-    await shot("09-recipients");
+    await shot("10-recipients");
     await click("#dlg [data-close]");
+
+    // The other answer to a changed file: reload it and drop the local edit.
+    const other = JSON.parse(cur.orig).map((i) => (i.k === "JWT_SIGNING_KEY" ? { ...i, v: "rotated-elsewhere" } : i));
+    await api("save", { path: cur.path, items: other });
+    await type("#editor .row:nth-of-type(1) .val", "my-edit");
+    await click("#save");
+    await click("#cfReload");
+    await until("the reloaded file", () => cur && cur.items.find((i) => i.k === "JWT_SIGNING_KEY")?.v === "rotated-elsewhere");
+    check(!text("#dirty").includes("Unsaved") && !cur.items.some((i) => i.v === "my-edit"), "reloading shows the version on disk and drops the edit");
+    await type("#editor .row:nth-of-type(3) .val", "6f1e0c9a4b7d2e8f5a3c1b9d");
+    await click("#save");
+    await shows("#dirty", "Saved");
+    check(!q("#dlg2").open, "after reloading, saving needs no confirmation");
+
+    // Copying a value: it reaches the clipboard and is removed again.
+    setState(await api("setSettings", { clipboardClearSeconds: 2 }));
+    await click("#editor .row:nth-of-type(2) [data-a=copy]");
+    await shows("#toast", "cleared in 2 s");
+    check((await call("clipboard")) === "sk_test_changed", "the copied value is on the clipboard");
+    await sleep(4500);
+    check((await call("clipboard")) !== "sk_test_changed", "the clipboard no longer holds the value after the set time");
+    q("#toast").className = "";
 
     await type("#editor .row:nth-of-type(1) .val", "unsaved");
     await click("#folderBtn");
     await shows("#dlg2", "Discard unsaved changes?");
-    await shot("10-confirm");
+    await shot("11-confirm");
     await click("#dlg2 #no");
     await click("#revert");
     check(!text("#dirty").includes("Unsaved"), "discarding restores the saved values");
@@ -144,19 +175,30 @@
     await click("#folderBtn");
     await shows("#dlg", "blog");
     check(document.querySelectorAll("#dlg [data-r]").length === 1, "the other recently opened folder is offered");
-    await shot("11-recent-folders");
+    await shot("12-recent-folders");
+    await click("#dlg [data-close]");
+
+    await click("#settingsBtn");
+    await until("the settings", () => q("#dlg[open] #clipSel"));
+    const sel = q("#clipSel");
+    sel.value = "60";
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    await until("the saved setting", () => S.settings.clipboardClearSeconds === 60);
+    check(true, "the clipboard time can be changed in the settings");
+    q("#toast").className = "";
+    await shot("13-settings");
     await click("#dlg [data-close]");
 
     setTheme("dark");
     check(document.documentElement.dataset.theme === "dark", "dark mode is applied");
-    await shot("12-dark");
+    await shot("14-dark");
     await click("#keysBtn");
     await until("the key in the dialog", () => q("#dlg [data-copy]"));
-    await shot("13-dark-keys");
+    await shot("15-dark-keys");
     await click("#dlg [data-close]");
     await click("#changesBtn");
     await until("the changes", () => q("#dlg[open] .chg"));
-    await shot("14-dark-changes");
+    await shot("16-dark-changes");
     await click("#dlg [data-close]");
 
     await call("done", { ok: true, log });

@@ -4,14 +4,10 @@
 //! The UI talks to [`App::handle`] with an action name and a JSON body.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
 
 use age::secrecy::ExposeSecret;
 use regex::Regex;
@@ -19,101 +15,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 const DOTENV: [&str; 4] = ["--input-type", "dotenv", "--output-type", "dotenv"];
-const EDIT_ADDR: &str = "OPEN_SOPS_UI_EDIT_ADDR";
-const EDIT_TOKEN: &str = "OPEN_SOPS_UI_EDIT_TOKEN";
 
 type Res<T> = Result<T, String>;
-
-// ---------------------------------------------------------------------------
-// Editor-helper mode
-// ---------------------------------------------------------------------------
-
-/// `sops edit` launches the app as its "editor". In that mode we fetch the new
-/// plaintext from the running app over loopback and write it into the temp
-/// file sops gave us, which keeps unchanged values byte-identical in Git.
-///
-/// Returns the process exit code when the process was started as an editor,
-/// `None` when it should start normally.
-pub fn run_as_editor_if_requested() -> Option<i32> {
-    let addr = std::env::var(EDIT_ADDR).ok()?;
-    let token = std::env::var(EDIT_TOKEN).ok()?;
-    let target = std::env::args().last()?;
-    let fetch = || -> std::io::Result<()> {
-        let mut stream = TcpStream::connect(addr)?;
-        stream.write_all(token.as_bytes())?;
-        stream.write_all(b"\n")?;
-        let mut text = Vec::new();
-        stream.read_to_end(&mut text)?;
-        if text.is_empty() {
-            return Err(std::io::Error::other("no content"));
-        }
-        std::fs::write(&target, text)
-    };
-    Some(if fetch().is_ok() { 0 } else { 1 })
-}
-
-/// Serves `plaintext` once on a loopback port to a client that sends `token`.
-struct EditHandoff {
-    addr: String,
-    token: String,
-    done: Arc<AtomicBool>,
-    thread: Option<std::thread::JoinHandle<()>>,
-}
-
-impl EditHandoff {
-    fn start(plaintext: String) -> Res<Self> {
-        let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
-        listener.set_nonblocking(true).map_err(|e| e.to_string())?;
-        let addr = listener
-            .local_addr()
-            .map_err(|e| e.to_string())?
-            .to_string();
-        let token = random_token();
-        let done = Arc::new(AtomicBool::new(false));
-        let (flag, expected) = (done.clone(), token.clone());
-        let thread = std::thread::spawn(move || {
-            while !flag.load(Ordering::Relaxed) {
-                let Ok((mut stream, _)) = listener.accept() else {
-                    std::thread::sleep(Duration::from_millis(15));
-                    continue;
-                };
-                let _ = stream.set_nonblocking(false);
-                let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-                let mut got = Vec::new();
-                let mut byte = [0u8; 1];
-                while got.len() < 128 && matches!(stream.read(&mut byte), Ok(1)) && byte[0] != b'\n'
-                {
-                    got.push(byte[0]);
-                }
-                if got == expected.as_bytes() {
-                    let _ = stream.write_all(plaintext.as_bytes());
-                    return;
-                }
-            }
-        });
-        Ok(Self {
-            addr,
-            token,
-            done,
-            thread: Some(thread),
-        })
-    }
-}
-
-impl Drop for EditHandoff {
-    fn drop(&mut self) {
-        self.done.store(true, Ordering::Relaxed);
-        if let Some(t) = self.thread.take() {
-            let _ = t.join();
-        }
-    }
-}
-
-fn random_token() -> String {
-    // A fresh age identity is 32 random bytes from the OS; reuse it as a token.
-    let id = age::x25519::Identity::generate();
-    id.to_public().to_string()
-}
 
 // ---------------------------------------------------------------------------
 // Paths and config
@@ -167,7 +70,11 @@ struct Config {
     last_folder: Option<String>,
     /// Recently opened folders, newest first.
     recent: Vec<String>,
+    /// Seconds after which a copied value is removed from the clipboard; 0 keeps it.
+    clipboard_clear_seconds: Option<u32>,
 }
+
+const DEFAULT_CLIPBOARD_CLEAR_SECONDS: u32 = 60;
 
 #[derive(Serialize, Deserialize, Clone)]
 struct KeyPath {
@@ -190,6 +97,128 @@ fn load_config() -> Config {
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default()
+}
+
+// ---------------------------------------------------------------------------
+// Reading text files
+// ---------------------------------------------------------------------------
+//
+// Encrypted files are always UTF-8, because sops writes them. Plaintext env
+// files and key files come from anywhere: Windows PowerShell writes UTF-16,
+// old editors Windows-1252, some tools a UTF-8 byte order mark.
+
+const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Windows-1252 differs from Latin-1 only in this range.
+const CP1252_HIGH: [char; 32] = [
+    '\u{20AC}', '\u{81}', '\u{201A}', '\u{192}', '\u{201E}', '\u{2026}', '\u{2020}', '\u{2021}',
+    '\u{2C6}', '\u{2030}', '\u{160}', '\u{2039}', '\u{152}', '\u{8D}', '\u{17D}', '\u{8F}',
+    '\u{90}', '\u{2018}', '\u{2019}', '\u{201C}', '\u{201D}', '\u{2022}', '\u{2013}', '\u{2014}',
+    '\u{2DC}', '\u{2122}', '\u{161}', '\u{203A}', '\u{153}', '\u{9D}', '\u{17E}', '\u{178}',
+];
+
+fn decode_utf16(bytes: &[u8], little_endian: bool) -> Option<String> {
+    let units = bytes.chunks_exact(2).map(|pair| {
+        if little_endian {
+            u16::from_le_bytes([pair[0], pair[1]])
+        } else {
+            u16::from_be_bytes([pair[0], pair[1]])
+        }
+    });
+    char::decode_utf16(units)
+        .collect::<Result<String, _>>()
+        .ok()
+}
+
+/// Decodes a text file's bytes and names the encoding found. `None` means
+/// the bytes aren't text.
+fn decode_text(bytes: &[u8]) -> Option<(String, &'static str)> {
+    let zeros_at = |offset: usize| {
+        bytes
+            .iter()
+            .skip(offset)
+            .step_by(2)
+            .filter(|b| **b == 0)
+            .count()
+    };
+    let decoded = if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
+        (String::from_utf8(rest.to_vec()).ok()?, "UTF-8 with BOM")
+    } else if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
+        (decode_utf16(rest, true)?, "UTF-16")
+    } else if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
+        (decode_utf16(rest, false)?, "UTF-16")
+    } else if let Ok(text) = std::str::from_utf8(bytes) {
+        (text.to_string(), "UTF-8")
+    } else if bytes.len() % 2 == 0 && zeros_at(1) * 4 > bytes.len() {
+        // No byte order mark, but every other byte is zero: UTF-16 of mostly ASCII text.
+        (decode_utf16(bytes, true)?, "UTF-16")
+    } else if bytes.len() % 2 == 0 && zeros_at(0) * 4 > bytes.len() {
+        (decode_utf16(bytes, false)?, "UTF-16")
+    } else {
+        let text = bytes
+            .iter()
+            .map(|b| {
+                if (0x80..0xA0).contains(b) {
+                    CP1252_HIGH[(*b - 0x80) as usize]
+                } else {
+                    *b as char
+                }
+            })
+            .collect();
+        (text, "Windows-1252")
+    };
+    (!decoded.0.contains('\0')).then_some(decoded)
+}
+
+struct TextFile {
+    text: String,
+    encoding: &'static str,
+    /// The bytes as they are on disk, to put back if a save fails halfway.
+    bytes: Vec<u8>,
+    /// Fingerprint of the bytes, to notice when someone else changes the file.
+    rev: String,
+}
+
+enum ReadProblem {
+    Missing,
+    Unreadable(String),
+}
+
+impl ReadProblem {
+    fn message(&self) -> String {
+        match self {
+            ReadProblem::Missing => "File or folder not found.".into(),
+            ReadProblem::Unreadable(why) => format!("{why}."),
+        }
+    }
+}
+
+fn fingerprint(bytes: &[u8]) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+fn read_text(path: &Path) -> Result<TextFile, ReadProblem> {
+    let problem = |e: std::io::Error| match e.kind() {
+        std::io::ErrorKind::NotFound => ReadProblem::Missing,
+        _ => ReadProblem::Unreadable(io_msg(e).trim_end_matches('.').to_string()),
+    };
+    if std::fs::metadata(path).map_err(problem)?.len() > MAX_FILE_BYTES {
+        return Err(ReadProblem::Unreadable(
+            "Larger than 2 MB, too big for an env file".into(),
+        ));
+    }
+    let bytes = std::fs::read(path).map_err(problem)?;
+    let (text, encoding) =
+        decode_text(&bytes).ok_or_else(|| ReadProblem::Unreadable("Not a text file".into()))?;
+    Ok(TextFile {
+        text,
+        encoding,
+        rev: fingerprint(&bytes),
+        bytes,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -229,12 +258,10 @@ fn parse_identities(text: &str) -> Res<Vec<Identity>> {
 }
 
 fn read_key_file(path: &Path) -> (Vec<Identity>, Option<String>) {
-    match std::fs::read_to_string(path) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            (vec![], Some("No file found here".into()))
-        }
-        Err(e) => (vec![], Some(e.to_string())),
-        Ok(text) => match parse_identities(&text) {
+    match read_text(path) {
+        Err(ReadProblem::Missing) => (vec![], Some("No file found here".into())),
+        Err(ReadProblem::Unreadable(why)) => (vec![], Some(why)),
+        Ok(file) => match parse_identities(&file.text) {
             Ok(ids) if ids.is_empty() => (ids, Some("No age key found in this file".into())),
             Ok(ids) => (ids, None),
             Err(e) => (vec![], Some(e)),
@@ -273,7 +300,18 @@ fn utc_timestamp() -> String {
 /// Appends identities to the default keys.txt. Existing keys are never touched.
 fn append_to_default(identities: &[Identity]) -> Res<()> {
     let path = default_key_path();
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    // Appending UTF-8 to a file in another encoding would corrupt it.
+    let existing = match read_text(&path) {
+        Ok(file) if file.encoding == "UTF-8" => file.text,
+        Ok(file) => {
+            return Err(format!(
+                "Your keys.txt is stored as {}. Save it as UTF-8 first; the app won't rewrite it.",
+                file.encoding
+            ))
+        }
+        Err(ReadProblem::Missing) => String::new(),
+        Err(problem) => return Err(problem.message()),
+    };
     let fresh: Vec<&Identity> = identities
         .iter()
         .filter(|i| !existing.contains(&i.secret))
@@ -284,37 +322,40 @@ fn append_to_default(identities: &[Identity]) -> Res<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(io_msg)?;
     }
-    let mut text = existing;
-    if !text.is_empty() && !text.ends_with('\n') {
-        text.push('\n');
+    // Only what is new gets written, at the end. The keys already in the
+    // file are never rewritten, so a crash or a full disk can't lose them.
+    let mut addition = String::new();
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        addition.push('\n');
     }
     for i in fresh {
-        text.push_str(&format!(
+        addition.push_str(&format!(
             "# created: {}\n# public key: {}\n{}\n",
             utc_timestamp(),
             i.public,
             i.secret
         ));
     }
-    write_private(&path, &text)
+    append_private(&path, &addition)
 }
 
-fn write_private(path: &Path, text: &str) -> Res<()> {
+/// Appends to a file only its owner may read, creating it if needed.
+fn append_private(path: &Path, text: &str) -> Res<()> {
     let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
+    opts.append(true).create(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         opts.mode(0o600);
     }
     let mut file = opts.open(path).map_err(io_msg)?;
-    file.write_all(text.as_bytes()).map_err(io_msg)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(io_msg)?;
     }
-    Ok(())
+    file.write_all(text.as_bytes()).map_err(io_msg)?;
+    file.sync_all().map_err(io_msg)
 }
 
 fn io_msg(e: std::io::Error) -> String {
@@ -413,8 +454,9 @@ fn find_program(name: &str) -> Option<PathBuf> {
     None
 }
 
-/// Oldest sops release the end-to-end test passes with; CI tests against it.
-pub const MIN_SOPS_VERSION: (u32, u32) = (3, 10);
+/// Oldest sops release the app works with; CI tests against it. Saving needs
+/// `sops set --value-stdin`, which 3.11 introduced.
+pub const MIN_SOPS_VERSION: (u32, u32) = (3, 11);
 
 #[derive(Serialize, Clone, Default)]
 struct SopsInfo {
@@ -675,6 +717,35 @@ fn repo_relative(root: &Path, file: &Path) -> Option<String> {
     )
 }
 
+/// Runs a read-only git command in a repository that may not be trustworthy.
+///
+/// A repository's own config can name programs for git to run, such as
+/// `core.fsmonitor` or hooks. Without these options, opening a folder that
+/// contains a prepared repository would execute them. None of the options
+/// changes what the commands report.
+fn git_read(git: &Path, root: &Path, args: &[&str]) -> std::io::Result<Output> {
+    let no_hooks = neutral_dir()
+        .map(|d| d.join("no-git-hooks").to_string_lossy().into_owned())
+        .unwrap_or_else(|| "no-git-hooks".into());
+    let hooks = format!("core.hooksPath={no_hooks}");
+    let mut all = vec![
+        "--no-optional-locks", // don't rewrite the index, which could also fire a hook
+        "--no-pager",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        hooks.as_str(),
+    ];
+    all.extend(args);
+    run(
+        git,
+        &all,
+        &[("GIT_TERMINAL_PROMPT", "0".into())],
+        Some(root),
+        None,
+    )
+}
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum GitState {
     Clean,
@@ -708,7 +779,7 @@ fn git_states(git: &Path, root: &Path, files: &[PathBuf]) -> Option<BTreeMap<Pat
         let mut all: Vec<&str> = args.to_vec();
         all.push("--");
         all.extend(rels.iter().map(String::as_str));
-        let out = run(git, &all, &[], Some(root), None).ok()?;
+        let out = git_read(git, root, &all).ok()?;
         (out.code == 0).then_some(out.stdout)
     };
     let tracked: BTreeSet<String> = call(&["ls-files", "-z"])?
@@ -718,7 +789,13 @@ fn git_states(git: &Path, root: &Path, files: &[PathBuf]) -> Option<BTreeMap<Pat
         .collect();
     // Entries look like "XY path"; a rename is followed by its old path.
     let mut changed: BTreeMap<String, GitState> = BTreeMap::new();
-    let status = call(&["status", "--porcelain=v1", "-z", "--untracked-files=all"])?;
+    let status = call(&[
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        "--ignore-submodules=all",
+    ])?;
     let mut entries = status.split('\0');
     while let Some(entry) = entries.next() {
         if entry.len() < 4 {
@@ -845,15 +922,12 @@ pub struct App {
     sops: SopsInfo,
     git: Option<PathBuf>,
     bundled_dirs: Vec<PathBuf>,
-    editor_exe: PathBuf,
     next_id: u32,
 }
 
 impl App {
     /// `bundled_dirs` are searched for a shipped sops binary before PATH.
-    /// `editor_exe` is the binary sops launches as its editor when saving; it
-    /// must call [`run_as_editor_if_requested`] first thing in `main`.
-    pub fn new(folder: Option<PathBuf>, bundled_dirs: Vec<PathBuf>, editor_exe: PathBuf) -> Self {
+    pub fn new(folder: Option<PathBuf>, bundled_dirs: Vec<PathBuf>) -> Self {
         let config = load_config();
         let folder = folder
             .or_else(|| {
@@ -873,12 +947,18 @@ impl App {
             folder,
             extra_files: vec![],
             bundled_dirs,
-            editor_exe,
             next_id: 0,
         };
         app.remember_folder();
         app.reload_keys();
         app
+    }
+
+    /// Seconds after which a copied value is removed from the clipboard; 0 keeps it.
+    pub fn clipboard_clear_seconds(&self) -> u32 {
+        self.config
+            .clipboard_clear_seconds
+            .unwrap_or(DEFAULT_CLIPBOARD_CLEAR_SECONDS)
     }
 
     /// Puts the current folder at the front of the recent list.
@@ -1054,9 +1134,24 @@ impl App {
         std::fs::write(file, out.stdout).map_err(io_msg)
     }
 
-    fn save_file(&self, file: &Path, items: &[Item], recipients: &[String]) -> Res<()> {
+    /// Saves the variables to `file`. `opened_rev` is the fingerprint the file
+    /// had when the UI loaded it; if the file has changed since (a `git pull`,
+    /// another editor), nothing is written and `Ok(false)` reports the
+    /// conflict, unless `overwrite` says the user confirmed.
+    fn save_file(
+        &self,
+        file: &Path,
+        items: &[Item],
+        recipients: &[String],
+        opened_rev: Option<&str>,
+        overwrite: bool,
+    ) -> Res<bool> {
         let plaintext = serialize_env(items)?;
-        let current = std::fs::read_to_string(file).unwrap_or_default();
+        let on_disk = read_text(file).map_err(|p| p.message())?;
+        if !overwrite && opened_rev.is_some_and(|rev| rev != on_disk.rev) {
+            return Ok(false);
+        }
+        let current = on_disk.text;
         if !is_encrypted(&current) {
             return match rule_recipients(file) {
                 Some(_) => self.encrypt_to(file, &plaintext, None),
@@ -1064,31 +1159,62 @@ impl App {
                     Err("Choose at least one recipient to encrypt for.".into())
                 }
                 None => self.encrypt_to(file, &plaintext, Some(recipients)),
-            };
+            }
+            .map(|()| true);
         }
-        let handoff = EditHandoff::start(plaintext)?;
-        // sops splits the editor command like a shell would, so quote the path
-        // and use forward slashes, which Windows accepts too.
-        let editor = format!(
-            "\"{}\"",
-            self.editor_exe.to_string_lossy().replace('\\', "/")
-        );
-        let env = [
-            ("SOPS_EDITOR", editor.clone()),
-            ("EDITOR", editor),
-            (EDIT_ADDR, handoff.addr.clone()),
-            (EDIT_TOKEN, handoff.token.clone()),
-        ];
+        // Change the encrypted file one variable at a time. Each value reaches
+        // sops through stdin, so nothing decrypted touches the disk (`sops edit`
+        // would write a temp file), and untouched variables keep their
+        // ciphertext, which keeps Git diffs small.
+        let before = self.decrypt(file)?;
+        let (changes, _) = env_changes(&before, &plaintext);
+        if changes.is_empty() {
+            return Ok(true);
+        }
+        let key = |change: &Value| change["k"].as_str().unwrap_or("").to_string();
+        // sops addresses a variable as ['NAME']; names with these characters can't be written that way.
+        if changes
+            .iter()
+            .any(|c| key(c).contains(['[', ']', '\'', '"']))
+        {
+            let recipients = file_recipients(&current);
+            if recipients.is_empty() {
+                return Err(
+                    "This file isn't encrypted for an age key, so it can't be saved here.".into(),
+                );
+            }
+            return self
+                .encrypt_to(file, &plaintext, Some(&recipients))
+                .map(|()| true);
+        }
         let path = file.to_string_lossy();
-        let mut args = vec!["edit"];
-        args.extend(DOTENV);
-        args.push(&path);
-        let out = self.sops(&args, &env, neutral_dir().as_deref(), None)?;
-        // 200 means "file has not changed", which is fine.
-        if out.code != 0 && out.code != 200 {
-            return Err(sops_error(&out.stderr));
+        let neutral = neutral_dir();
+        let applied = changes.iter().try_for_each(|change| {
+            let index = format!("['{}']", key(change));
+            let out = if change["kind"] == "removed" {
+                let mut args = vec!["unset"];
+                args.extend(DOTENV);
+                args.extend([&*path, index.as_str()]);
+                self.sops(&args, &[], neutral.as_deref(), None)?
+            } else {
+                // sops expects the value JSON-encoded.
+                let value = serde_json::to_string(&change["new"]).map_err(|e| e.to_string())?;
+                let mut args = vec!["set", "--value-stdin"];
+                args.extend(DOTENV);
+                args.extend([&*path, index.as_str()]);
+                self.sops(&args, &[], neutral.as_deref(), Some(&value))?
+            };
+            if out.code == 0 {
+                Ok(())
+            } else {
+                Err(sops_error(&out.stderr))
+            }
+        });
+        if applied.is_err() {
+            // Don't leave the file half-changed: put back exactly what was there.
+            let _ = std::fs::write(file, &on_disk.bytes);
         }
-        Ok(())
+        applied.map(|()| true)
     }
 
     fn set_recipients(&self, file: &Path, recipients: &[String]) -> Res<()> {
@@ -1122,9 +1248,16 @@ impl App {
             info["status"] = json!(status);
             info["note"] = json!(note);
         };
-        let Ok(text) = std::fs::read_to_string(file) else {
-            set("missing", "File not found");
-            return info;
+        let text = match read_text(file) {
+            Ok(file) => file.text,
+            Err(ReadProblem::Missing) => {
+                set("missing", "File not found");
+                return info;
+            }
+            Err(ReadProblem::Unreadable(why)) => {
+                set("unreadable", &why);
+                return info;
+            }
         };
         if !is_encrypted(&text) {
             let base = file
@@ -1224,25 +1357,31 @@ impl App {
             "recent": self.config.recent.iter().filter(|f| Path::new(f).is_dir()).collect::<Vec<_>>(),
             "keys": keys,
             "book": self.config.book,
+            "settings": { "clipboardClearSeconds": self.clipboard_clear_seconds() },
         })
     }
 
     fn open_file(&self, file: &Path) -> Res<Value> {
-        let text = std::fs::read_to_string(file).map_err(io_msg)?;
-        if !is_encrypted(&text) {
+        let on_disk = read_text(file).map_err(|p| p.message())?;
+        let text = &on_disk.text;
+        // Named only when it isn't plain UTF-8, so the UI can say what will change on saving.
+        let encoding = (on_disk.encoding != "UTF-8").then_some(on_disk.encoding);
+        if !is_encrypted(text) {
             return Ok(json!({
-                "encrypted": false, "items": parse_env(&text), "recipients": [],
+                "encrypted": false, "items": parse_env(text), "recipients": [],
                 "hasRule": rule_recipients(file).is_some(),
+                "rev": on_disk.rev, "encoding": encoding,
             }));
         }
         let plaintext = self.decrypt(file)?;
-        let recipients: Vec<Value> = file_recipients(&text)
+        let recipients: Vec<Value> = file_recipients(text)
             .iter()
             .map(|k| json!({ "key": k, "name": self.name_for(k), "mine": self.label_for(k).is_some() }))
             .collect();
-        Ok(
-            json!({ "encrypted": true, "items": parse_env(&plaintext), "recipients": recipients, "hasRule": true }),
-        )
+        Ok(json!({
+            "encrypted": true, "items": parse_env(&plaintext), "recipients": recipients, "hasRule": true,
+            "rev": on_disk.rev, "encoding": encoding,
+        }))
     }
 
     /// Compares the file on disk with its last committed version, decrypted.
@@ -1253,20 +1392,14 @@ impl App {
             .as_ref()
             .ok_or("Git isn't installed, so there's no committed version to compare with.")?;
         let rel = repo_relative(&root, file).ok_or("This file isn't in a Git repository.")?;
-        let on_disk = std::fs::read_to_string(file).map_err(io_msg)?;
+        let on_disk = read_text(file).map_err(|p| p.message())?.text;
         let current = if is_encrypted(&on_disk) {
             self.decrypt(file)?
         } else {
             on_disk
         };
-        let shown = run(
-            git,
-            &["show", &format!("HEAD:{rel}")],
-            &[],
-            Some(&root),
-            None,
-        )
-        .map_err(|e| e.to_string())?;
+        let shown =
+            git_read(git, &root, &["show", &format!("HEAD:{rel}")]).map_err(|e| e.to_string())?;
         // A failing `git show` means the file has never been committed.
         let committed = shown.code == 0;
         let before = match (committed, is_encrypted(&shown.stdout)) {
@@ -1353,7 +1486,15 @@ impl App {
                 let items: Vec<Item> =
                     serde_json::from_value(body.get("items").cloned().unwrap_or(Value::Null))
                         .map_err(|_| "The file content couldn't be read.".to_string())?;
-                self.save_file(&file(), &items, &list("recipients"))?;
+                let rev = body.get("rev").and_then(Value::as_str);
+                let overwrite = body
+                    .get("overwrite")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if !self.save_file(&file(), &items, &list("recipients"), rev, overwrite)? {
+                    // The UI asks the user whether to overwrite, then sends the save again.
+                    return Ok(json!({ "conflict": true }));
+                }
                 Ok(json!({ "state": self.state(), "file": self.open_file(&file())? }))
             }
 
@@ -1474,6 +1615,16 @@ impl App {
                 Ok(self.state())
             }
 
+            "setSettings" => {
+                let seconds = body.get("clipboardClearSeconds").and_then(Value::as_u64);
+                let seconds = seconds
+                    .filter(|s| *s <= 3600)
+                    .ok_or("Choose a time of up to one hour.")?;
+                self.config.clipboard_clear_seconds = Some(seconds as u32);
+                self.save_config()?;
+                Ok(self.state())
+            }
+
             "bookRemove" => {
                 let key = text("key");
                 self.config.book.retain(|b| b.key != key);
@@ -1537,12 +1688,12 @@ mod tests {
     #[test]
     fn sops_version_floor() {
         assert!(
-            version_supported("3.10.0")
+            version_supported("3.11.0")
                 && version_supported("3.13.3")
                 && version_supported("4.0.0")
         );
         assert!(
-            !version_supported("3.9.4")
+            !version_supported("3.10.2")
                 && !version_supported("2.99.0")
                 && !version_supported("junk")
         );
@@ -1604,7 +1755,7 @@ mod tests {
         assert_eq!(repo_branch(&repo).as_deref(), Some("feature/login"));
         assert_eq!(repo_relative(&repo, &file).as_deref(), Some("api/.env"));
 
-        let mut app = App::new(Some(root.clone()), vec![], PathBuf::from("unused"));
+        let mut app = App::new(Some(root.clone()), vec![]);
         app.git = None;
         let state = app.state();
         assert_eq!(state["git"], false);
@@ -1634,6 +1785,111 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A repository's config can name a program for git to run. Listing the
+    /// files of such a repository must not run it.
+    #[test]
+    fn untrusted_repository_config_is_not_executed() {
+        let Some(git) = find_program("git") else {
+            eprintln!("git not installed: skipping");
+            return;
+        };
+        let root = std::env::temp_dir().join(format!("open-sops-ui-trap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join(".env"), "A=1\n").unwrap();
+        let marker = root.join("EXECUTED");
+        let trap = format!(
+            "touch '{}'; false",
+            marker.to_string_lossy().replace('\\', "/")
+        );
+        let raw = |args: &[&str]| {
+            run(&git, args, &[], Some(&repo), None)
+                .map(|o| o.code == 0)
+                .unwrap_or(false)
+        };
+        assert!(raw(&["init", "-q"]));
+        assert!(raw(&["config", "core.fsmonitor", &trap]));
+
+        // The trap is real: a plain `git status` springs it.
+        raw(&["status"]);
+        if !marker.exists() {
+            eprintln!("this git doesn't run core.fsmonitor here: nothing to guard against");
+            let _ = std::fs::remove_dir_all(&root);
+            return;
+        }
+        std::fs::remove_file(&marker).unwrap();
+
+        let app = App::new(Some(root.clone()), vec![]);
+        let state = app.state();
+        let listed = state["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["git"] == "new");
+        assert!(listed, "the file's Git status is still reported");
+        assert!(app.changes(&repo.join(".env")).is_ok());
+        assert!(
+            !marker.exists(),
+            "the repository's fsmonitor program was executed"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn decodes_the_encodings_env_files_come_in() {
+        let utf16 = |text: &str, le: bool, bom: bool| -> Vec<u8> {
+            let mut out = if !bom {
+                vec![]
+            } else if le {
+                vec![0xFF, 0xFE]
+            } else {
+                vec![0xFE, 0xFF]
+            };
+            for unit in text.encode_utf16() {
+                out.extend(if le {
+                    unit.to_le_bytes()
+                } else {
+                    unit.to_be_bytes()
+                });
+            }
+            out
+        };
+        let text = "A=1\nNAME=Zo\u{eb}\n";
+        assert_eq!(
+            decode_text(text.as_bytes()),
+            Some((text.to_string(), "UTF-8"))
+        );
+        assert_eq!(
+            decode_text(&[&[0xEF, 0xBB, 0xBF][..], text.as_bytes()].concat()),
+            Some((text.to_string(), "UTF-8 with BOM"))
+        );
+        for (le, bom) in [(true, true), (false, true), (true, false), (false, false)] {
+            assert_eq!(
+                decode_text(&utf16(text, le, bom)),
+                Some((text.to_string(), "UTF-16")),
+                "le={le} bom={bom}"
+            );
+        }
+        assert_eq!(
+            decode_text(b"N=caf\xe9 \x80\n"),
+            Some(("N=caf\u{e9} \u{20ac}\n".to_string(), "Windows-1252"))
+        );
+        assert_eq!(
+            decode_text(b"\x7fELF\x02\x01\x01\x00\x00\x00garbage\xff"),
+            None
+        );
+        // A byte order mark must not end up in the first variable's name.
+        assert_eq!(
+            parse_env(&decode_text(b"\xef\xbb\xbfA=1\n").unwrap().0)[0],
+            Item::Kv {
+                k: "A".into(),
+                v: "1".into()
+            }
+        );
     }
 
     #[test]

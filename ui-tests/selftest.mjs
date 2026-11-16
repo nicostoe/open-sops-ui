@@ -36,7 +36,7 @@ const ORIGINAL = [
   "",
 ].join("\n");
 const EXPECTED = ORIGINAL.replace("sk_test_1", "sk_test_changed") + "SENTRY_DSN=https://abc123@sentry.example/42\n";
-const EXPECTED_SHOTS = 14;
+const EXPECTED_SHOTS = 16;
 const TIMEOUT_MS = 180_000;
 
 // OPEN_SOPS_UI_SELFTEST_ROOT pins the folder, so screenshots show a tidy path

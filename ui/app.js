@@ -16,6 +16,7 @@ const ICONS = {
   folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
   file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
   x: '<path d="M6 6l12 12M18 6L6 18"/>',
+  gear: '<path d="M4 7h9M19 7h1M4 17h1M11 17h9"/><circle cx="16" cy="7" r="2.5"/><circle cx="8" cy="17" r="2.5"/>',
   branch: '<circle cx="6" cy="5" r="2.5"/><circle cx="6" cy="19" r="2.5"/><circle cx="18" cy="8" r="2.5"/><path d="M6 7.5v9M18 10.5c0 5-12 2-12 6"/>',
   up: '<path d="M12 19V5M6 11l6-6 6 6"/>',
   alert: '<path d="M12 3l9.5 17h-19z"/><path d="M12 10v4M12 17.5v.1"/>',
@@ -40,8 +41,14 @@ function toast(msg, bad = false) {
   clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.className = ""), bad ? 5000 : 2200);
 }
 const fail = (e) => toast(e.message, true);
-async function copy(text, what) {
-  try { await T.clipboardManager.writeText(text); toast(what + " copied"); } catch { toast("Couldn't copy to the clipboard.", true); }
+// Copying goes through the backend, which also removes a secret from the
+// clipboard again after the time chosen in the settings.
+const duration = (s) => (s % 60 === 0 ? `${s / 60} min` : `${s} s`);
+async function copy(text, what, secret = false) {
+  try {
+    const seconds = await T.core.invoke("copy", { text, secret });
+    toast(seconds ? `${what} copied. The clipboard is cleared in ${duration(seconds)}.` : `${what} copied`);
+  } catch (e) { toast(typeof e === "string" ? e : "Couldn't copy to the clipboard.", true); }
 }
 
 // ---- theme ---------------------------------------------------------------
@@ -74,7 +81,7 @@ function setState(s) {
   const brew = S.os === "darwin" ? ` (<span class="mono">brew install sops</span>)` : "";
   const from = `from <span class="mono">github.com/getsops/sops/releases</span>`;
   banner.innerHTML = S.sops.path
-    ? `sops ${esc(S.sops.version)} is too old; saving may fail. Install sops 3.10 or newer${brew} ${from}, then restart this app.`
+    ? `sops ${esc(S.sops.version)} is too old; saving may fail. Install sops 3.11 or newer${brew} ${from}, then restart this app.`
     : `sops wasn't found. Install it${brew} ${from}` +
       (S.appDir ? `, or put the sops binary in <span class="mono">${esc(S.appDir)}</span>` : "") + `. Then restart this app.`;
   renderFiles();
@@ -83,7 +90,7 @@ function isDirty() {
   return cur && JSON.stringify(cur.items) !== cur.orig;
 }
 function renderFiles() {
-  const icon = { ok: "lock", locked: "lock", plain: "unlock", "plain-risk": "unlock", "plain-tracked": "unlock", missing: "file" };
+  const icon = { ok: "lock", locked: "lock", plain: "unlock", "plain-risk": "unlock", "plain-tracked": "unlock", missing: "file", unreadable: "file" };
   const gitMark = { modified: ["M", "Changed since the last commit"], new: ["N", "Not committed yet"] };
   const button = ({ f, i, base }) => {
     const mark = gitMark[f.git];
@@ -135,7 +142,7 @@ async function openFile(f) {
   if (!f) return;
   if (isDirty() && !(await ask("Discard unsaved changes?", "Discard"))) return;
   shown.clear();
-  if (f.status === "locked" || f.status === "missing") { cur = { path: f.path, blocked: f }; renderFiles(); return renderEditor(); }
+  if (f.status === "locked" || f.status === "missing" || f.status === "unreadable") { cur = { path: f.path, blocked: f }; renderFiles(); return renderEditor(); }
   try {
     const d = await api("open", { path: f.path });
     cur = { path: f.path, ...d, orig: JSON.stringify(d.items) };
@@ -154,6 +161,10 @@ function renderEditor() {
   const m = meta() || cur.blocked;
   if (cur.blocked) {
     const want = (m.recipients || []).map((k) => `<div class="mono small">${esc(k)}</div>`).join("");
+    if (m.status === "unreadable") {
+      el.innerHTML = `<div class="empty">${ic("file")}<h2>This file can't be shown</h2><p>${esc(m.note)}.</p></div>`;
+      return;
+    }
     el.innerHTML = `<div class="empty">${ic("key")}<h2>${m.status === "missing" ? "File not found" : "No matching key"}</h2>
       ${m.status === "missing" ? "" : `<p>None of your loaded keys can open <span class="mono">${esc(m.name)}</span>. It's encrypted for:</p>${want}
       <p><button class="btn" id="goKeys">${ic("key")}Add a key</button></p>`}</div>`;
@@ -188,6 +199,7 @@ function renderEditor() {
   el.innerHTML = `${note}
     <div class="filehead"><span class="name mono">${esc(m ? m.name : cur.path)}</span>
       <span class="muted small">${cur.encrypted ? `${cur.recipients.length} recipient${cur.recipients.length === 1 ? "" : "s"}` : "Not encrypted yet"}</span>
+      ${cur.encoding ? `<span class="pill" title="Encrypting saves the file as UTF-8, which is what sops writes.">${esc(cur.encoding)}</span>` : ""}
       ${canCompare ? `<button class="btn sm" id="changesBtn" title="Compare with the last commit">${ic("branch")}Changes</button>` : ""}</div>
     <div class="table">${rows}<button class="addrow" id="addVar">${ic("plus")}Add variable</button></div>
     <div class="foot"><span class="muted small" id="dirty"></span><span class="spacer"></span>
@@ -206,7 +218,7 @@ function renderEditor() {
     row.querySelector(".k").oninput = (e) => { it.k = e.target.value.trim(); tint(); };
     row.querySelector(".val").oninput = (e) => { it.v = e.target.value; tint(); };
     row.querySelector("[data-a=eye]").onclick = () => { shown.has(i) ? shown.delete(i) : shown.add(i); renderEditor(); };
-    row.querySelector("[data-a=copy]").onclick = () => copy(it.v, it.k || "Value");
+    row.querySelector("[data-a=copy]").onclick = () => copy(it.v, it.k || "Value", true);
     row.querySelector("[data-a=del]").onclick = () => { cur.items.splice(i, 1); shown.clear(); renderEditor(); };
   });
   $("#addVar").onclick = () => {
@@ -231,13 +243,48 @@ async function save() {
   if (!cur.encrypted && !cur.hasRule) return chooseRecipients();
   await doSave();
 }
-async function doSave(recipients) {
+async function doSave(recipients, overwrite = false) {
   try {
-    const d = await api("save", { path: cur.path, items: cur.items, recipients });
+    const d = await api("save", { path: cur.path, items: cur.items, recipients, rev: cur.rev, overwrite });
+    if (d.conflict) return conflictDialog(recipients);
     cur = { path: cur.path, ...d.file, orig: JSON.stringify(d.file.items) };
     setState(d.state); renderEditor();
     toast("Encrypted and saved");
   } catch (e) { fail(e); }
+}
+
+// The file changed on disk after it was opened here, for example through a
+// git pull. Nothing has been written; the user decides which version wins.
+function conflictDialog(recipients) {
+  const dlg = $("#dlg2"), m = meta();
+  show(dlg, "This file changed on disk", `
+    <p><span class="mono">${esc(m ? m.rel || m.name : cur.path)}</span> was changed outside this app after you opened it, for example by a Git pull or another editor.</p>
+    <p class="muted small">Overwriting replaces that version with what you see here. Reloading shows the version on disk and drops your edits.</p>
+    <div class="formrow" style="justify-content:flex-end"><button class="btn" id="cfCancel">Cancel</button>
+      <button class="btn" id="cfReload">Reload from disk</button><button class="btn primary" id="cfOverwrite">Overwrite</button></div>`);
+  $("#cfCancel", dlg).onclick = () => dlg.close();
+  $("#cfOverwrite", dlg).onclick = () => { dlg.close(); doSave(recipients, true); };
+  $("#cfReload", dlg).onclick = async () => {
+    dlg.close();
+    const f = meta();
+    cur = null;
+    await openFile(f);
+    toast("Reloaded from disk");
+  };
+}
+
+function settingsDialog() {
+  const dlg = $("#dlg"), now = S.settings.clipboardClearSeconds;
+  const choices = [15, 30, 60, 120, 300, 0];
+  if (!choices.includes(now)) choices.unshift(now);
+  show(dlg, "Settings", `
+    <h3>Clipboard</h3>
+    <div class="formrow" style="align-items:center"><label for="clipSel" style="flex:1">Clear copied values after</label>
+      <select id="clipSel">${choices.map((s) => `<option value="${s}" ${s === now ? "selected" : ""}>${s ? duration(s) : "Never"}</option>`).join("")}</select></div>
+    <p class="muted small">Applies to variable values, not to public keys. Clipboard history tools may keep their own copy.</p>`);
+  $("#clipSel", dlg).onchange = async (e) => {
+    try { setState(await api("setSettings", { clipboardClearSeconds: +e.target.value })); toast("Setting saved"); } catch (err) { fail(err); }
+  };
 }
 
 // ---- dialogs -------------------------------------------------------------
@@ -430,6 +477,8 @@ function ask(message, okLabel) {
   });
 }
 
+$("#settingsBtn").innerHTML = ic("gear");
+$("#settingsBtn").onclick = settingsDialog;
 $("#keysBtn").onclick = keysDialog;
 $("#recBtn").onclick = recipientsDialog;
 async function openFolder(path) {

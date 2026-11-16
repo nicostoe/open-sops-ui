@@ -108,6 +108,11 @@ pub fn ui_test(app: tauri::AppHandle, action: String, body: Value) -> Result<Val
                 .collect();
             Ok(json!(screenshot(&dir.join(format!("{name}.png")))))
         }
+        // What is on the clipboard right now, to check that copied values get cleared.
+        "clipboard" => {
+            use tauri_plugin_clipboard_manager::ClipboardExt;
+            Ok(json!(app.clipboard().read_text().unwrap_or_default()))
+        }
         "commit" => Ok(json!(commit(Path::new(
             body["path"].as_str().unwrap_or("")
         )))),
