@@ -43,11 +43,13 @@ npm run build
 - **Saving an encrypted file:** runs `sops edit` with this app's own binary as the editor. `main` calls `run_as_editor_if_requested` first; in that mode the process fetches the plaintext from a one-shot loopback socket (address and token in env vars) and writes it to sops's temp file. This keeps unchanged values byte-identical.
 - **Encrypting plaintext or changing recipients:** pipes plaintext to `sops encrypt` on stdin.
 - **Working directory:** sops finds `.sops.yaml` upward from its working directory and fails if one exists without a matching rule. Calls with explicit recipients run from `neutral_dir()`; only rule-based encryption runs from the file's folder.
+- **Git:** optional everywhere. Repository and branch come from the file system (`repo_root`, `repo_branch` read `.git`), so grouping works without the `git` binary. Status needs `git` and costs two calls per repository (`git_states`), never one per file. `changes` decrypts `git show HEAD:<file>` and compares by variable. The app reads from Git and may append to `.gitignore`; it never commits, pushes, or writes decrypted values to disk.
 - **Format:** always pass `--input-type dotenv --output-type dotenv`; names like `.env.prod.enc` aren't detected by extension.
 
 ## Rules
 
 - Never write secret keys or decrypted values to disk, logs, the config file or anything returned to the UI. The only exception is the explicit "Save to default location" action, which appends to `keys.txt` and never overwrites it.
+- Git must stay optional: every feature has to work in a folder without a repository and on a machine without `git`. Add Git information as extra fields that may be null, and keep `works_without_git_installed` passing.
 - Must work on Linux, Windows and macOS. Use `std::path`, guard Unix-only code with `cfg(unix)`, keep `CREATE_NO_WINDOW` on child processes, and don't assume a shell.
 - Keep the CSP strict: no inline scripts, no remote resources. Inline `style` attributes are allowed.
 - Use in-app dialogs (`ask`, `show`) instead of `confirm()` or `alert()`; those are unreliable in system web views. File and folder pickers go through the dialog plugin, clipboard through the clipboard plugin.
@@ -58,8 +60,9 @@ npm run build
 
 The project is kept up to date by Renovate with auto-merge, so the tests are the safety net. Every change needs a test that would fail without it.
 
+- **Git:** `git_flow` in `tests/flow.rs` covers status, comparison and `.gitignore` against a real repository; `works_without_git_installed` in `lib.rs` covers the app with no `git` binary. The UI test's project is a repository, and its test-only `commit` action (in `ui_test.rs`) creates the commit to compare against.
 - **Backend:** `cargo test -p open-sops-ui-core`. `tests/flow.rs` is one end-to-end flow against a real sops; extend it when you add or change an action. Set `OPEN_SOPS_UI_TEST_EDITOR` to the built desktop binary to run the same flow through its editor mode.
-- **UI:** `node ui-tests/selftest.mjs target/release/open-sops-ui`. The steps live in `ui/selftest.js`; extend them when you change `ui/` or add a flow, add a `shot(...)` for every new screen, and update `EXPECTED` and `EXPECTED_SHOTS` in `ui-tests/selftest.mjs`. Native file dialogs can't be driven; the test passes the folder as an argument instead. Wait for a specific element, never for text that is also in a static hint.
+- **UI:** `node ui-tests/selftest.mjs target/release/open-sops-ui`. The steps live in `ui/selftest.js`; extend them when you change `ui/` or add a flow, add a `shot(...)` for every new screen, and update `EXPECTED` and `EXPECTED_SHOTS` in `ui-tests/selftest.mjs`. Native file dialogs can't be driven; the test passes the folder as an argument instead. Wait for a specific element, never for text that is also in a static hint. A closed dialog keeps its old content, so wait for `#dlg[open] …` when a dialog is reused.
 - **README pictures:** `docs/screenshots/` comes from the same UI test. After a visible UI change, regenerate with `scripts/readme-screenshots.sh <with-sops .deb>` (needs Docker); it runs in a clean container so no local paths end up in the pictures.
 - **Screenshots:** every CI run publishes a `screenshots` artifact. Look at them after changing styles or layout; they have already caught a rendering bug no assertion would.
 - **Packages:** `open-sops-ui --self-check [file]` reports as JSON which sops the app would use, without opening a window. `scripts/smoke-test.sh` relies on it.

@@ -58,6 +58,40 @@ fn screenshot(file: &Path) -> bool {
     cmd.status().map(|s| s.success()).unwrap_or(false) && file.is_file()
 }
 
+/// Commits one file, so the test can show what "changed since the last
+/// commit" looks like. The app itself never commits anything.
+fn commit(file: &Path) -> bool {
+    let Some(dir) = file.parent() else {
+        return false;
+    };
+    let git = |args: &[&str]| {
+        let mut cmd = Command::new("git");
+        cmd.args([
+            "-c",
+            "user.name=UI test",
+            "-c",
+            "user.email=ui-test@example.invalid",
+        ])
+        .args(["-c", "commit.gpgsign=false", "-c", "core.autocrlf=false"])
+        .args(args)
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000);
+        }
+        cmd.status().map(|s| s.success()).unwrap_or(false)
+    };
+    let name = file
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    git(&["add", "--", &name]) && git(&["commit", "-q", "-m", "Encrypt the env file", "--", &name])
+}
+
 #[tauri::command(async)]
 pub fn ui_test(app: tauri::AppHandle, action: String, body: Value) -> Result<Value, String> {
     let Some(dir) = output_dir() else {
@@ -74,6 +108,9 @@ pub fn ui_test(app: tauri::AppHandle, action: String, body: Value) -> Result<Val
                 .collect();
             Ok(json!(screenshot(&dir.join(format!("{name}.png")))))
         }
+        "commit" => Ok(json!(commit(Path::new(
+            body["path"].as_str().unwrap_or("")
+        )))),
         "done" => {
             let text = serde_json::to_string_pretty(&body).unwrap_or_default();
             let written = std::fs::write(dir.join("result.json"), text).is_ok();

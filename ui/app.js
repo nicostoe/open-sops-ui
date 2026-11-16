@@ -16,6 +16,7 @@ const ICONS = {
   folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
   file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
   x: '<path d="M6 6l12 12M18 6L6 18"/>',
+  branch: '<circle cx="6" cy="5" r="2.5"/><circle cx="6" cy="19" r="2.5"/><circle cx="18" cy="8" r="2.5"/><path d="M6 7.5v9M18 10.5c0 5-12 2-12 6"/>',
   up: '<path d="M12 19V5M6 11l6-6 6 6"/>',
   alert: '<path d="M12 3l9.5 17h-19z"/><path d="M12 10v4M12 17.5v.1"/>',
 };
@@ -82,28 +83,41 @@ function isDirty() {
   return cur && JSON.stringify(cur.items) !== cur.orig;
 }
 function renderFiles() {
-  const icon = { ok: "lock", locked: "lock", plain: "unlock", "plain-risk": "unlock", missing: "file" };
+  const icon = { ok: "lock", locked: "lock", plain: "unlock", "plain-risk": "unlock", "plain-tracked": "unlock", missing: "file" };
+  const gitMark = { modified: ["M", "Changed since the last commit"], new: ["N", "Not committed yet"] };
+  const button = ({ f, i, base }) => {
+    const mark = gitMark[f.git];
+    return `<button class="file s-${f.status} ${cur && cur.path === f.path ? "active" : ""}" data-i="${i}" title="${esc(f.name)}\n${esc(f.note)}">
+      ${ic(icon[f.status])}<span class="mono">${esc(base)}</span>${mark ? `<span class="gs gs-${f.git}" title="${mark[1]}">${mark[0]}</span>` : ""}</button>`;
+  };
   // Files are grouped under their folder, so long paths don't push the
-  // file name out of view. Files directly in the project come first.
-  const groups = new Map();
-  S.files.forEach((f, i) => {
-    const cut = Math.max(f.name.lastIndexOf("/"), f.name.lastIndexOf("\\"));
-    const dir = cut < 0 ? "" : f.name.slice(0, cut + 1);
-    if (!groups.has(dir)) groups.set(dir, []);
-    groups.get(dir).push({ f, i, base: f.name.slice(cut + 1) });
-  });
-  const button = ({ f, i, base }) =>
-    `<button class="file s-${f.status} ${cur && cur.path === f.path ? "active" : ""}" data-i="${i}" title="${esc(f.name)}\n${esc(f.note)}">
-      ${ic(icon[f.status])}<span class="mono">${esc(base)}</span></button>`;
-  const dirs = [...groups.keys()].filter((d) => d).sort((a, b) => a.localeCompare(b));
-  $("#files").innerHTML = (groups.get("") || []).map(button).join("") +
-    dirs.map((d) => {
+  // file name out of view. Files directly at the top come first.
+  const section = (entries) => {
+    const groups = new Map();
+    for (const e of entries) {
+      const cut = Math.max(e.path.lastIndexOf("/"), e.path.lastIndexOf("\\"));
+      const dir = cut < 0 ? "" : e.path.slice(0, cut + 1);
+      if (!groups.has(dir)) groups.set(dir, []);
+      groups.get(dir).push({ ...e, base: e.path.slice(cut + 1) });
+    }
+    const dirs = [...groups.keys()].filter((d) => d).sort((a, b) => a.localeCompare(b));
+    return (groups.get("") || []).map(button).join("") + dirs.map((d) => {
       // A subfolder listed right under its parent shows only the rest of its path, indented.
       const parent = dirs.filter((p) => p !== d && d.startsWith(p)).sort((x, y) => y.length - x.length)[0];
       const label = parent ? d.slice(parent.length) : d;
       return `<div class="dir mono${parent ? " sub" : ""}" title="${esc(d)}"><bdi>${esc(label)}</bdi></div>` +
         groups.get(d).map(button).join("");
-    }).join("") +
+    }).join("");
+  };
+  // Git repositories are the usual home of env files: each gets its own
+  // section with its branch. Files outside any repository come first, and a
+  // folder without repositories looks exactly as it would without Git.
+  const all = S.files.map((f, i) => ({ f, i }));
+  const loose = all.filter((e) => !e.f.repo).map((e) => ({ ...e, path: e.f.name }));
+  const repos = (S.repos || []).map((r) => `<div class="repo" title="${esc(r.root)}">${ic("branch")}<span class="rname">${esc(r.name || r.root)}</span>` +
+    (r.branch ? `<span class="branch mono" title="Current branch">${esc(r.branch)}</span>` : "") + `</div>` +
+    section(all.filter((e) => e.f.repo === r.root).map((e) => ({ ...e, path: e.f.rel || e.f.name }))));
+  $("#files").innerHTML = section(loose) + repos.join("") +
     (S.files.length ? "" : `<div class="muted small" style="padding:6px 8px">No env files in this folder.</div>`) +
     `<button class="file addfile" id="addFile">${ic("plus")}<span>Open file</span></button>` +
     (S.sops.path ? `<div class="sopsinfo" title="${esc(S.sops.path)}">sops ${esc(S.sops.version)} · ${S.sops.source}</div>` : "");
@@ -160,16 +174,27 @@ function renderEditor() {
         <button class="btn icon" data-a="del" title="Delete" aria-label="Delete variable">${ic("trash")}</button>
       </span></div>`;
   }).join("");
-  const note = !cur.encrypted && m && m.status === "plain-risk"
-    ? `<div class="note warn">${ic("alert")}This file is plaintext and Git isn't ignoring it.</div>`
-    : m && m.drift ? `<div class="note warn">${ic("alert")}Recipients differ from the .sops.yaml rule.<button class="btn sm" id="fixDrift">Review</button></div>` : "";
+  let note = "";
+  if (!cur.encrypted && m && m.status === "plain-tracked") {
+    note = `<div class="note bad">${ic("alert")}<span>This file is plaintext and committed to Git. Encrypting it protects future commits, but the values stay readable in the history, so change those secrets.</span></div>`;
+  } else if (!cur.encrypted && m && m.status === "plain-risk") {
+    note = `<div class="note warn">${ic("alert")}<span>This file is plaintext and Git isn't ignoring it. Encrypt it before committing, or keep it out of Git.</span>` +
+      (m.repo ? `<button class="btn sm" id="ignoreBtn">Add to .gitignore</button>` : "") + `</div>`;
+  } else if (m && m.drift) {
+    note = `<div class="note warn">${ic("alert")}<span>Recipients differ from the .sops.yaml rule.</span><button class="btn sm" id="fixDrift">Review</button></div>`;
+  }
+  // Comparing with the last commit needs a repository and git itself.
+  const canCompare = m && m.repo && S.git && (m.git === "modified" || m.git === "new");
   el.innerHTML = `${note}
     <div class="filehead"><span class="name mono">${esc(m ? m.name : cur.path)}</span>
-      <span class="muted small">${cur.encrypted ? `${cur.recipients.length} recipient${cur.recipients.length === 1 ? "" : "s"}` : "Not encrypted yet"}</span></div>
+      <span class="muted small">${cur.encrypted ? `${cur.recipients.length} recipient${cur.recipients.length === 1 ? "" : "s"}` : "Not encrypted yet"}</span>
+      ${canCompare ? `<button class="btn sm" id="changesBtn" title="Compare with the last commit">${ic("branch")}Changes</button>` : ""}</div>
     <div class="table">${rows}<button class="addrow" id="addVar">${ic("plus")}Add variable</button></div>
     <div class="foot"><span class="muted small" id="dirty"></span><span class="spacer"></span>
       <button class="btn" id="revert" hidden>Discard</button>
       <button class="btn primary" id="save">${ic("lock")}Encrypt and save</button></div>`;
+  if ($("#changesBtn")) $("#changesBtn").onclick = changesDialog;
+  if ($("#ignoreBtn")) $("#ignoreBtn").onclick = () => act("ignore", { path: cur.path }, null, "Added to .gitignore");
 
   el.querySelectorAll(".row").forEach((row) => {
     const i = +row.dataset.i, it = cur.items[i];
@@ -223,6 +248,31 @@ function show(dlg, title, html) {
   if (!dlg.open) dlg.showModal();
 }
 document.querySelectorAll("dialog").forEach((d) => d.addEventListener("click", (e) => { if (e.target === d) d.close(); }));
+
+// What changed in the open file since the last commit, by variable. Values
+// stay hidden until asked for.
+async function changesDialog() {
+  if (isDirty()) return toast("Save or discard your changes first.", true);
+  let d;
+  try { d = await api("changes", { path: cur.path }); } catch (e) { return fail(e); }
+  const dlg = $("#dlg"), m = meta();
+  const label = { added: "Added", changed: "Changed", removed: "Removed" };
+  let reveal = false;
+  const render = () => {
+    const val = (v) => `<span class="mono">${reveal ? esc(v) : "••••••••"}</span>`;
+    const rows = d.changes.map((c) => `<div class="chg"><span class="pill chg-${c.kind}">${label[c.kind]}</span>
+      <span class="mono ck">${esc(c.k)}</span>
+      <span class="cv">${c.kind === "changed" ? `${val(c.old)} → ${val(c.new)}` : val(c.kind === "added" ? c.new : c.old)}</span></div>`).join("");
+    const name = `<span class="mono">${esc(m ? m.rel || m.name : "")}</span>`;
+    show(dlg, "Changes since the last commit", `
+      <p class="muted small">${d.committed ? `Compared with the committed version of ${name}.` : `${name} has never been committed, so everything in it is new.`}</p>
+      ${rows || `<p>The values are the same as in the last commit. Only the encryption changed, for example the recipients.</p>`}
+      ${rows && d.unchanged ? `<p class="muted small">${d.unchanged} unchanged variable${d.unchanged === 1 ? "" : "s"}</p>` : ""}
+      ${rows ? `<div class="formrow" style="justify-content:flex-end"><button class="btn" id="chgReveal">${ic(reveal ? "eyeoff" : "eye")}${reveal ? "Hide values" : "Show values"}</button></div>` : ""}`);
+    if ($("#chgReveal", dlg)) $("#chgReveal", dlg).onclick = () => { reveal = !reveal; render(); };
+  };
+  render();
+}
 
 // Everyone I could encrypt for: my own keys first, then saved recipients.
 function candidates() {
@@ -382,11 +432,23 @@ function ask(message, okLabel) {
 
 $("#keysBtn").onclick = keysDialog;
 $("#recBtn").onclick = recipientsDialog;
+async function openFolder(path) {
+  try { cur = null; setState(await api("setFolder", { path })); renderEditor(); } catch (e) { fail(e); }
+}
+async function chooseFolder() {
+  const p = await pick("folder", "Choose a project folder", S.folder);
+  if (p) openFolder(p);
+}
 $("#folderBtn").onclick = async () => {
   if (isDirty() && !(await ask("Discard unsaved changes?", "Discard"))) return;
-  const p = await pick("folder", "Choose a project folder", S.folder);
-  if (!p) return;
-  try { cur = null; setState(await api("setFolder", { path: p })); renderEditor(); } catch (e) { fail(e); }
+  const recent = (S.recent || []).filter((f) => f !== S.folder);
+  if (!recent.length) return chooseFolder();
+  const dlg = $("#dlg");
+  show(dlg, "Open folder", `<h3>Recent</h3>
+    <div class="recent">${recent.map((f, i) => `<button class="file" data-r="${i}" title="${esc(f)}">${ic("folder")}<span class="mono"><bdi>${esc(f)}</bdi></span></button>`).join("")}</div>
+    <div class="formrow" style="justify-content:flex-end"><button class="btn" id="otherFolder">${ic("folder")}Choose another folder</button></div>`);
+  dlg.querySelectorAll("[data-r]").forEach((b) => (b.onclick = () => { dlg.close(); openFolder(recent[b.dataset.r]); }));
+  $("#otherFolder", dlg).onclick = () => { dlg.close(); chooseFolder(); };
 };
 
 // Ask before closing the window with unsaved edits.

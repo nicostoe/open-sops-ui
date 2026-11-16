@@ -36,7 +36,7 @@ const ORIGINAL = [
   "",
 ].join("\n");
 const EXPECTED = ORIGINAL.replace("sk_test_1", "sk_test_changed") + "SENTRY_DSN=https://abc123@sentry.example/42\n";
-const EXPECTED_SHOTS = 11;
+const EXPECTED_SHOTS = 14;
 const TIMEOUT_MS = 180_000;
 
 // OPEN_SOPS_UI_SELFTEST_ROOT pins the folder, so screenshots show a tidy path
@@ -58,6 +58,28 @@ mkdirSync(join(project, "services", "worker", "config"), { recursive: true });
 writeFileSync(join(project, "services", "worker", "config", ".env.testing"), "QUEUE_URL=redis://localhost:6379/9\n");
 writeFileSync(join(project, "services", "worker", ".env"), "QUEUE_URL=redis://localhost:6379/1\nCONCURRENCY=4\n");
 writeFileSync(join(project, ".env.staging"), "DATABASE_URL=postgres://shop:dev@localhost:5432/shop_staging\nLOG_LEVEL=debug\n");
+writeFileSync(join(project, ".env.example"), "DATABASE_URL=\nSTRIPE_SECRET=\nJWT_SIGNING_KEY=\nSMTP_PASSWORD=\n");
+writeFileSync(join(project, ".gitignore"), "/.env.staging\n");
+
+// The project is a Git repository, the usual home of env files: an example
+// file is committed, the staging file is ignored, the rest is untracked.
+const git = (...args) =>
+  execFileSync("git", ["-c", "user.name=UI test", "-c", "user.email=ui-test@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false", ...args], { cwd: project, stdio: "ignore" });
+try {
+  git("init", "-q", "-b", "main");
+  git("add", ".gitignore", ".env.example");
+  git("commit", "-q", "-m", "Add the example env file");
+} catch {
+  console.error("The UI test needs git on PATH. (The app itself works without it.)");
+  process.exit(2);
+}
+
+// A second, previously opened project for the recent-folders list.
+const blog = join(root, "projects", "blog");
+mkdirSync(blog, { recursive: true });
+writeFileSync(join(blog, ".env"), "SITE_URL=https://blog.example\n");
+mkdirSync(join(config, "open-sops-ui"), { recursive: true });
+writeFileSync(join(config, "open-sops-ui", "config.json"), JSON.stringify({ recent: [blog] }));
 
 // The app, its web view and sops keep their data here instead of the real profile.
 const env = { ...process.env, XDG_CONFIG_HOME: config, XDG_DATA_HOME: join(root, "data") };

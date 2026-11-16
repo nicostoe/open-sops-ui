@@ -6,12 +6,14 @@ Decrypted values are held in memory only. The app makes no network requests.
 
 <p align="center">
   <img src="docs/screenshots/editor-light.png" width="49%" alt="Editing an encrypted env file: one value changed, one variable added">
-  <img src="docs/screenshots/keys-dark.png" width="49%" alt="The keys dialog in dark mode">
+  <img src="docs/screenshots/changes-dark.png" width="49%" alt="Dark mode: what changed in an encrypted file since the last commit">
 </p>
 
 ## What it does
 
 - Lists env files in a folder and shows which are encrypted, which of your keys opens each, and which are still plaintext.
+- Knows Git, where env files usually live: files are grouped by repository with its branch, marked when they differ from the last commit, and a comparison shows which variables were added, changed or removed, decrypted, where `git diff` only shows ciphertext.
+- Warns about plaintext secrets that Git would commit or already has, and can add a file to `.gitignore`.
 - Edits values in a table and saves through `sops edit`, so unchanged values stay byte-identical in Git.
 - Loads age keys from the default location, from any number of custom key files, or pasted for the session only. A pasted or newly created key can be saved to the default location.
 - Manages who can decrypt a file, with a saved list of named public keys.
@@ -52,6 +54,8 @@ Other systems may work but aren't checked. The Linux packages need at least the 
    ```
 
 A `sops` binary shipped with the app, or placed next to it, is used first; otherwise the one on your `PATH`.
+
+Git is optional. Without a repository, or without `git` installed, the app works the same and simply shows no Git information. It never commits or pushes, and it never writes decrypted values to a file.
 
 `git` is optional; it's used to warn about plaintext env files that Git isn't ignoring. `age` and `age-keygen` aren't needed.
 
@@ -125,7 +129,7 @@ CI runs this on every pull request and once a week:
 
 Each run offers one `screenshots` artifact with the pictures from every platform, and its summary lists which platforms passed. A failed check repeats its error as an annotation on the run, readable without signing in.
 
-Not covered by any test: native file dialogs, the clipboard, the `.msi` installer, and macOS or Windows versions older than the ones above.
+The backend tests also run the app's logic with Git unavailable. Not covered by any test: native file dialogs, the clipboard, the `.msi` installer, and macOS or Windows versions older than the ones above.
 
 ## Keeping it up to date
 

@@ -3,7 +3,7 @@
 //!
 //! The UI talks to [`App::handle`] with an action name and a JSON body.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -165,6 +165,8 @@ struct Config {
     key_paths: Vec<KeyPath>,
     book: Vec<BookEntry>,
     last_folder: Option<String>,
+    /// Recently opened folders, newest first.
+    recent: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -623,6 +625,175 @@ fn rule_recipients(file: &Path) -> Option<Vec<String>> {
 }
 
 // ---------------------------------------------------------------------------
+// Git (optional)
+// ---------------------------------------------------------------------------
+//
+// Env files usually live in Git repositories, so the app groups them by
+// repository and shows what changed since the last commit. None of this is
+// required: a folder without a repository, or a machine without git, simply
+// gets less information.
+
+/// The repository a file belongs to: the nearest folder above it holding a
+/// `.git` entry. A plain file system lookup, so it works without git.
+fn repo_root(file: &Path) -> Option<PathBuf> {
+    file.parent()?
+        .ancestors()
+        .find(|dir| dir.join(".git").exists())
+        .map(PathBuf::from)
+}
+
+/// The checked-out branch, read from `.git/HEAD`. In a worktree or submodule
+/// `.git` is a file pointing at the real folder.
+fn repo_branch(root: &Path) -> Option<String> {
+    let dot_git = root.join(".git");
+    let git_dir = if dot_git.is_file() {
+        let pointer = std::fs::read_to_string(&dot_git).ok()?;
+        root.join(
+            pointer
+                .lines()
+                .find_map(|l| l.strip_prefix("gitdir:"))?
+                .trim(),
+        )
+    } else {
+        dot_git
+    };
+    let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    let head = head.trim();
+    Some(match head.strip_prefix("ref: refs/heads/") {
+        Some(branch) => branch.to_string(),
+        None => head.chars().take(7).collect(), // detached: short commit id
+    })
+}
+
+/// A file's path inside its repository, with forward slashes as git expects.
+fn repo_relative(root: &Path, file: &Path) -> Option<String> {
+    Some(
+        file.strip_prefix(root)
+            .ok()?
+            .to_string_lossy()
+            .replace('\\', "/"),
+    )
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum GitState {
+    Clean,
+    Modified,
+    New,
+    Ignored,
+}
+
+impl GitState {
+    fn as_str(self) -> &'static str {
+        match self {
+            GitState::Clean => "clean",
+            GitState::Modified => "modified",
+            GitState::New => "new",
+            GitState::Ignored => "ignored",
+        }
+    }
+    fn tracked(self) -> bool {
+        matches!(self, GitState::Clean | GitState::Modified)
+    }
+}
+
+/// Asks git about a set of files in one repository: two calls per repository,
+/// not per file. Returns `None` when git can't answer.
+fn git_states(git: &Path, root: &Path, files: &[PathBuf]) -> Option<BTreeMap<PathBuf, GitState>> {
+    let rels: Vec<String> = files
+        .iter()
+        .filter_map(|f| repo_relative(root, f))
+        .collect();
+    let call = |args: &[&str]| -> Option<String> {
+        let mut all: Vec<&str> = args.to_vec();
+        all.push("--");
+        all.extend(rels.iter().map(String::as_str));
+        let out = run(git, &all, &[], Some(root), None).ok()?;
+        (out.code == 0).then_some(out.stdout)
+    };
+    let tracked: BTreeSet<String> = call(&["ls-files", "-z"])?
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+        .collect();
+    // Entries look like "XY path"; a rename is followed by its old path.
+    let mut changed: BTreeMap<String, GitState> = BTreeMap::new();
+    let status = call(&["status", "--porcelain=v1", "-z", "--untracked-files=all"])?;
+    let mut entries = status.split('\0');
+    while let Some(entry) = entries.next() {
+        if entry.len() < 4 {
+            continue;
+        }
+        let (code, path) = (&entry[..2], &entry[3..]);
+        if code.contains('R') || code.contains('C') {
+            entries.next();
+        }
+        let state = if code == "??" || code.starts_with('A') {
+            GitState::New
+        } else {
+            GitState::Modified
+        };
+        changed.insert(path.to_string(), state);
+    }
+    let mut states = BTreeMap::new();
+    for file in files {
+        let Some(rel) = repo_relative(root, file) else {
+            continue;
+        };
+        let state = match changed.get(&rel) {
+            Some(state) => *state,
+            None if tracked.contains(&rel) => GitState::Clean,
+            // Untracked and not reported as such: an ignore rule covers it.
+            None => GitState::Ignored,
+        };
+        states.insert(file.clone(), state);
+    }
+    Some(states)
+}
+
+/// Committed on purpose with placeholder values, like `.env.example`.
+fn is_template(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    ["example", "sample", "template", "dist"]
+        .iter()
+        .any(|word| lower.split('.').any(|part| part == *word))
+}
+
+/// What changed between two versions of an env file, by variable.
+fn env_changes(old: &str, new: &str) -> (Vec<Value>, usize) {
+    let pairs = |text: &str| -> Vec<(String, String)> {
+        parse_env(text)
+            .into_iter()
+            .filter_map(|item| match item {
+                Item::Kv { k, v } => Some((k, v)),
+                Item::Raw { .. } => None,
+            })
+            .collect()
+    };
+    let (old, new) = (pairs(old), pairs(new));
+    let find = |list: &[(String, String)], key: &str| {
+        list.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
+    };
+    let mut changes = Vec::new();
+    let mut unchanged = 0;
+    for (k, v) in &new {
+        match find(&old, k) {
+            None => changes.push(json!({ "k": k, "kind": "added", "new": v })),
+            Some(before) if before != *v => {
+                changes.push(json!({ "k": k, "kind": "changed", "old": before, "new": v }))
+            }
+            Some(_) => unchanged += 1,
+        }
+    }
+    for (k, v) in &old {
+        if find(&new, k).is_none() {
+            changes.push(json!({ "k": k, "kind": "removed", "old": v }));
+        }
+    }
+    (changes, unchanged)
+}
+
+// ---------------------------------------------------------------------------
 // The app
 // ---------------------------------------------------------------------------
 
@@ -705,8 +876,17 @@ impl App {
             editor_exe,
             next_id: 0,
         };
+        app.remember_folder();
         app.reload_keys();
         app
+    }
+
+    /// Puts the current folder at the front of the recent list.
+    fn remember_folder(&mut self) {
+        let current = self.folder.to_string_lossy().into_owned();
+        self.config.recent.retain(|f| *f != current);
+        self.config.recent.insert(0, current);
+        self.config.recent.truncate(8);
     }
 
     fn save_config(&self) -> Res<()> {
@@ -838,6 +1018,18 @@ impl App {
         Ok(out.stdout)
     }
 
+    /// Decrypts encrypted content that isn't on disk, such as a committed version.
+    fn decrypt_text(&self, encrypted: &str) -> Res<String> {
+        let mut args = vec!["decrypt"];
+        args.extend(DOTENV);
+        args.extend(["--filename-override", "committed.env"]);
+        let out = self.sops(&args, &[], neutral_dir().as_deref(), Some(encrypted))?;
+        if out.code != 0 {
+            return Err(sops_error(&out.stderr));
+        }
+        Ok(out.stdout)
+    }
+
     /// Encrypts plaintext from stdin and writes the result to `file`.
     /// With `recipients == None` the matching .sops.yaml rule decides.
     fn encrypt_to(&self, file: &Path, plaintext: &str, recipients: Option<&[String]>) -> Res<()> {
@@ -912,39 +1104,43 @@ impl App {
 
     // ---- views -----------------------------------------------------------
 
-    fn git_ignored(&self, file: &Path) -> Option<bool> {
-        let name = file.file_name()?.to_string_lossy().into_owned();
-        let out = run(
-            self.git.as_ref()?,
-            &["check-ignore", "-q", &name],
-            &[],
-            file.parent(),
-            None,
-        )
-        .ok()?;
-        match out.code {
-            0 => Some(true),
-            1 => Some(false),
-            _ => None,
-        }
-    }
-
-    fn describe_file(&self, file: &Path) -> Value {
+    fn describe_file(&self, file: &Path, root: Option<&Path>, git: Option<GitState>) -> Value {
         let path = file.to_string_lossy();
         let name = file
             .strip_prefix(&self.folder)
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|_| path.to_string());
+        let mut info = json!({
+            "path": path,
+            "name": name,
+            "repo": root.map(|r| r.to_string_lossy().into_owned()),
+            // Path inside the repository; the file list groups by it.
+            "rel": root.and_then(|r| file.strip_prefix(r).ok()).map(|p| p.to_string_lossy().into_owned()),
+            "git": git.map(GitState::as_str),
+        });
+        let mut set = |status: &str, note: &str| {
+            info["status"] = json!(status);
+            info["note"] = json!(note);
+        };
         let Ok(text) = std::fs::read_to_string(file) else {
-            return json!({ "path": path, "name": name, "status": "missing", "note": "File not found" });
+            set("missing", "File not found");
+            return info;
         };
         if !is_encrypted(&text) {
-            let (status, note) = if self.git_ignored(file) == Some(false) {
-                ("plain-risk", "Plaintext and not ignored by Git")
-            } else {
-                ("plain", "Plaintext")
-            };
-            return json!({ "path": path, "name": name, "status": status, "note": note });
+            let base = file
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            match git {
+                _ if is_template(&base) => set("plain", "Example file, plaintext by design"),
+                Some(state) if state.tracked() => {
+                    set("plain-tracked", "Plaintext and committed to Git")
+                }
+                Some(GitState::New) => set("plain-risk", "Plaintext and not ignored by Git"),
+                Some(GitState::Ignored) => set("plain", "Plaintext, ignored by Git"),
+                _ => set("plain", "Plaintext"),
+            }
+            return info;
         }
         let recipients = file_recipients(&text);
         let drift = rule_recipients(file).and_then(|expected| {
@@ -961,11 +1157,13 @@ impl App {
             (!missing.is_empty() || !extra.is_empty())
                 .then(|| json!({ "missing": missing, "extra": extra }))
         });
-        let (status, note) = match recipients.iter().find_map(|r| self.label_for(r)) {
-            Some(label) => ("ok", format!("Opens with {label}")),
-            None => ("locked", "No matching key".to_string()),
-        };
-        json!({ "path": path, "name": name, "status": status, "note": note, "recipients": recipients, "drift": drift })
+        match recipients.iter().find_map(|r| self.label_for(r)) {
+            Some(label) => set("ok", &format!("Opens with {label}")),
+            None => set("locked", "No matching key"),
+        }
+        info["recipients"] = json!(recipients);
+        info["drift"] = json!(drift);
+        info
     }
 
     fn state(&self) -> Value {
@@ -976,6 +1174,33 @@ impl App {
                 found.push(extra.clone());
             }
         }
+        // Group the files by repository, then ask git once per repository.
+        let mut by_repo: BTreeMap<PathBuf, Vec<PathBuf>> = BTreeMap::new();
+        for file in &found {
+            if let Some(root) = repo_root(file) {
+                by_repo.entry(root).or_default().push(file.clone());
+            }
+        }
+        let mut states: BTreeMap<PathBuf, GitState> = BTreeMap::new();
+        let mut repos = Vec::new();
+        for (root, files) in &by_repo {
+            if let Some(found) = self
+                .git
+                .as_ref()
+                .and_then(|git| git_states(git, root, files))
+            {
+                states.extend(found);
+            }
+            repos.push(json!({
+                "root": root.to_string_lossy(),
+                "name": root.file_name().map(|n| n.to_string_lossy().into_owned()),
+                "branch": repo_branch(root),
+            }));
+        }
+        let files: Vec<Value> = found
+            .iter()
+            .map(|f| self.describe_file(f, repo_root(f).as_deref(), states.get(f).copied()))
+            .collect();
         let keys: Vec<Value> = self
             .key_sources
             .iter()
@@ -992,7 +1217,11 @@ impl App {
             "os": if cfg!(target_os = "macos") { "darwin" } else { std::env::consts::OS },
             "appDir": self.bundled_dirs.first().map(|d| d.to_string_lossy().into_owned()),
             "defaultKeyPath": default_key_path().to_string_lossy(),
-            "files": found.iter().map(|f| self.describe_file(f)).collect::<Vec<_>>(),
+            "files": files,
+            "repos": repos,
+            // False when git isn't installed: repositories are still shown, without status.
+            "git": self.git.is_some(),
+            "recent": self.config.recent.iter().filter(|f| Path::new(f).is_dir()).collect::<Vec<_>>(),
             "keys": keys,
             "book": self.config.book,
         })
@@ -1014,6 +1243,59 @@ impl App {
         Ok(
             json!({ "encrypted": true, "items": parse_env(&plaintext), "recipients": recipients, "hasRule": true }),
         )
+    }
+
+    /// Compares the file on disk with its last committed version, decrypted.
+    fn changes(&self, file: &Path) -> Res<Value> {
+        let root = repo_root(file).ok_or("This file isn't in a Git repository.")?;
+        let git = self
+            .git
+            .as_ref()
+            .ok_or("Git isn't installed, so there's no committed version to compare with.")?;
+        let rel = repo_relative(&root, file).ok_or("This file isn't in a Git repository.")?;
+        let on_disk = std::fs::read_to_string(file).map_err(io_msg)?;
+        let current = if is_encrypted(&on_disk) {
+            self.decrypt(file)?
+        } else {
+            on_disk
+        };
+        let shown = run(
+            git,
+            &["show", &format!("HEAD:{rel}")],
+            &[],
+            Some(&root),
+            None,
+        )
+        .map_err(|e| e.to_string())?;
+        // A failing `git show` means the file has never been committed.
+        let committed = shown.code == 0;
+        let before = match (committed, is_encrypted(&shown.stdout)) {
+            (false, _) => String::new(),
+            (true, false) => shown.stdout,
+            (true, true) => self
+                .decrypt_text(&shown.stdout)
+                .map_err(|e| format!("The committed version couldn't be decrypted. {e}"))?,
+        };
+        let (changes, unchanged) = env_changes(&before, &current);
+        Ok(json!({ "committed": committed, "changes": changes, "unchanged": unchanged }))
+    }
+
+    /// Adds the file to its repository's .gitignore. Needs no git binary.
+    fn ignore(&self, file: &Path) -> Res<()> {
+        let root = repo_root(file).ok_or("This file isn't in a Git repository.")?;
+        let rel = repo_relative(&root, file).ok_or("This file isn't in a Git repository.")?;
+        let path = root.join(".gitignore");
+        let mut text = std::fs::read_to_string(&path).unwrap_or_default();
+        let line = format!("/{rel}");
+        if text.lines().any(|l| l.trim() == line) {
+            return Ok(());
+        }
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(&line);
+        text.push('\n');
+        std::fs::write(path, text).map_err(io_msg)
     }
 
     // ---- actions ---------------------------------------------------------
@@ -1042,6 +1324,7 @@ impl App {
                 self.config.last_folder = Some(path.to_string_lossy().into_owned());
                 self.folder = path;
                 self.extra_files.clear();
+                self.remember_folder();
                 self.save_config()?;
                 Ok(self.state())
             }
@@ -1058,6 +1341,13 @@ impl App {
             }
 
             "open" => self.open_file(&file()),
+
+            "changes" => self.changes(&file()),
+
+            "ignore" => {
+                self.ignore(&file())?;
+                Ok(self.state())
+            }
 
             "save" => {
                 let items: Vec<Item> =
@@ -1256,6 +1546,94 @@ mod tests {
                 && !version_supported("2.99.0")
                 && !version_supported("junk")
         );
+    }
+
+    #[test]
+    fn env_changes_by_variable() {
+        let (changes, unchanged) = env_changes("A=1\n# c\nB=2\nC=3\n", "A=1\nB=9\nD=4\n");
+        let kinds: Vec<_> = changes
+            .iter()
+            .map(|c| {
+                format!(
+                    "{}:{}",
+                    c["k"].as_str().unwrap(),
+                    c["kind"].as_str().unwrap()
+                )
+            })
+            .collect();
+        assert_eq!(kinds, ["B:changed", "D:added", "C:removed"]);
+        assert_eq!(unchanged, 1);
+    }
+
+    #[test]
+    fn template_names() {
+        for name in [
+            ".env.example",
+            "sample.env",
+            ".env.template",
+            ".env.dist",
+            ".ENV.Example",
+        ] {
+            assert!(is_template(name), "{name}");
+        }
+        for name in [".env", ".env.production", "examples.env"] {
+            assert!(!is_template(name), "{name}");
+        }
+    }
+
+    /// Git is optional: without the binary, repositories are still found and
+    /// named from the file system, and everything else keeps working.
+    #[test]
+    fn works_without_git_installed() {
+        let root = std::env::temp_dir().join(format!("open-sops-ui-nogit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let repo = root.join("shop");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(repo.join("api")).unwrap();
+        std::fs::write(
+            repo.join(".git").join("HEAD"),
+            "ref: refs/heads/feature/login\n",
+        )
+        .unwrap();
+        std::fs::write(repo.join("api").join(".env"), "A=1\n").unwrap();
+        std::fs::write(root.join("loose.env"), "B=2\n").unwrap();
+        let file = repo.join("api").join(".env");
+
+        assert_eq!(repo_root(&file), Some(repo.clone()));
+        assert_eq!(repo_root(&root.join("loose.env")), repo_root(&root));
+        assert_eq!(repo_branch(&repo).as_deref(), Some("feature/login"));
+        assert_eq!(repo_relative(&repo, &file).as_deref(), Some("api/.env"));
+
+        let mut app = App::new(Some(root.clone()), vec![], PathBuf::from("unused"));
+        app.git = None;
+        let state = app.state();
+        assert_eq!(state["git"], false);
+        let in_repo = state["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["path"] == file.to_string_lossy().as_ref())
+            .unwrap();
+        assert_eq!(in_repo["repo"], repo.to_string_lossy().as_ref());
+        assert!(in_repo["git"].is_null());
+        assert_eq!(in_repo["status"], "plain");
+        if repo_root(&root).is_none() {
+            assert_eq!(state["repos"].as_array().unwrap().len(), 1);
+            assert_eq!(state["repos"][0]["branch"], "feature/login");
+        }
+        assert!(app
+            .changes(&file)
+            .unwrap_err()
+            .contains("Git isn't installed"));
+        // Opening and ignoring need no git either.
+        assert_eq!(app.open_file(&file).unwrap()["items"][0]["k"], "A");
+        app.ignore(&file).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(repo.join(".gitignore")).unwrap(),
+            "/api/.env\n"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

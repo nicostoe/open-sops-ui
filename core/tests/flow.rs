@@ -263,5 +263,172 @@ fn full_flow() {
         .handle("addSessionKey", &json!({ "content": "hello" }))
         .is_err());
 
+    git_flow(&mut app, &root, &a);
+
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Repositories, Git status, comparison with the last commit and .gitignore.
+/// Skipped when git isn't installed; the app itself must not need it, which
+/// the unit tests in the crate cover.
+fn git_flow(app: &mut App, root: &std::path::Path, key: &str) {
+    let work = root.join("work");
+    let repo = work.join("shop");
+    std::fs::create_dir_all(repo.join("config")).unwrap();
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.invalid",
+                "-c",
+                "core.autocrlf=false",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .current_dir(&repo)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    };
+    if !git(&["init", "-q", "-b", "main"]) {
+        eprintln!("git not installed: skipping the Git part of the test");
+        return;
+    }
+    let write = |rel: &str, text: &str| std::fs::write(repo.join(rel), text).unwrap();
+    write(".gitignore", "local.env\n");
+    write(".env.example", "API_KEY=\n");
+    write("local.env", "L=1\n");
+    write("leak.env", "S=1\n");
+    write("config/prod.env", "KEEP=1\nCHANGE=old\nDROP=x\n");
+    std::fs::write(work.join("loose.env"), "Z=1\n").unwrap();
+
+    let path = |rel: &str| repo.join(rel).to_string_lossy().to_string();
+    app.handle("setFolder", &json!({ "path": work.to_string_lossy() }))
+        .unwrap();
+    let kv = |pairs: &[(&str, &str)]| -> Value {
+        pairs
+            .iter()
+            .map(|(k, v)| json!({ "t": "kv", "k": k, "v": v }))
+            .collect()
+    };
+    let prod = path("config/prod.env");
+    app.handle(
+        "save",
+        &json!({ "path": prod, "items": kv(&[("KEEP", "1"), ("CHANGE", "old"), ("DROP", "x")]), "recipients": [key] }),
+    )
+    .unwrap();
+    assert!(git(&[
+        "add",
+        ".gitignore",
+        ".env.example",
+        "leak.env",
+        "config/prod.env"
+    ]));
+    assert!(git(&["commit", "-q", "-m", "init"]));
+    write("new.env", "N=1\n");
+
+    let state = app.handle("state", &json!({})).unwrap();
+    assert_eq!(state["git"], true);
+    assert_eq!(state["recent"][0], work.to_string_lossy().to_string());
+    assert_eq!(state["repos"].as_array().unwrap().len(), 1);
+    assert_eq!(state["repos"][0]["name"], "shop");
+    assert_eq!(state["repos"][0]["branch"], "main");
+    let file = |state: &Value, p: &str| {
+        state["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["path"] == p)
+            .unwrap()
+            .clone()
+    };
+    let f = file(&state, &prod);
+    assert_eq!(
+        (f["git"].as_str(), f["status"].as_str()),
+        (Some("clean"), Some("ok"))
+    );
+    assert_eq!(f["repo"], repo.to_string_lossy().to_string());
+    assert_eq!(
+        f["rel"],
+        std::path::Path::new("config")
+            .join("prod.env")
+            .to_string_lossy()
+            .to_string()
+    );
+    assert_eq!(file(&state, &path(".env.example"))["status"], "plain");
+    assert_eq!(file(&state, &path("leak.env"))["status"], "plain-tracked");
+    let f = file(&state, &path("local.env"));
+    assert_eq!(
+        (f["git"].as_str(), f["status"].as_str()),
+        (Some("ignored"), Some("plain"))
+    );
+    let f = file(&state, &path("new.env"));
+    assert_eq!(
+        (f["git"].as_str(), f["status"].as_str()),
+        (Some("new"), Some("plain-risk"))
+    );
+    let f = file(&state, &work.join("loose.env").to_string_lossy());
+    assert!(f["repo"].is_null() && f["git"].is_null());
+    assert_eq!(f["status"], "plain");
+
+    // Nothing changed yet; then edit and compare with the commit.
+    let same = app.handle("changes", &json!({ "path": prod })).unwrap();
+    assert_eq!(
+        (
+            same["committed"].as_bool(),
+            same["changes"].as_array().unwrap().len(),
+            same["unchanged"].as_u64()
+        ),
+        (Some(true), 0, Some(3))
+    );
+    let saved = app
+        .handle("save", &json!({ "path": prod, "items": kv(&[("KEEP", "1"), ("CHANGE", "new"), ("ADDED", "y")]) }))
+        .unwrap();
+    assert_eq!(file(&saved["state"], &prod)["git"], "modified");
+    let diff = app.handle("changes", &json!({ "path": prod })).unwrap();
+    assert_eq!(
+        diff["changes"],
+        json!([
+            { "k": "CHANGE", "kind": "changed", "old": "old", "new": "new" },
+            { "k": "ADDED", "kind": "added", "new": "y" },
+            { "k": "DROP", "kind": "removed", "old": "x" },
+        ])
+    );
+    assert_eq!(diff["unchanged"], 1);
+
+    // A file that was never committed is all additions; one outside a repository can't be compared.
+    let fresh = app
+        .handle("changes", &json!({ "path": path("new.env") }))
+        .unwrap();
+    assert_eq!(fresh["committed"], false);
+    assert_eq!(
+        fresh["changes"],
+        json!([{ "k": "N", "kind": "added", "new": "1" }])
+    );
+    let err = app
+        .handle(
+            "changes",
+            &json!({ "path": work.join("loose.env").to_string_lossy() }),
+        )
+        .unwrap_err();
+    assert!(err.contains("isn't in a Git repository"), "{err}");
+
+    // Ignoring adds one anchored line, once.
+    let state = app
+        .handle("ignore", &json!({ "path": path("new.env") }))
+        .unwrap();
+    let f = file(&state, &path("new.env"));
+    assert_eq!(
+        (f["git"].as_str(), f["status"].as_str()),
+        (Some("ignored"), Some("plain"))
+    );
+    app.handle("ignore", &json!({ "path": path("new.env") }))
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(repo.join(".gitignore")).unwrap(),
+        "local.env\n/new.env\n"
+    );
 }

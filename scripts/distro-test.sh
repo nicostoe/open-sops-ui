@@ -17,10 +17,10 @@ if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -q
   apt-get install -y -q --no-install-recommends "$(ls "$packages"/*with-sops.deb | head -n 1)" \
-    xvfb xauth imagemagick ca-certificates fonts-dejavu-core
+    xvfb xauth imagemagick git ca-certificates fonts-dejavu-core
 elif command -v dnf >/dev/null 2>&1; then
   dnf install -y -q "$(ls "$packages"/*with-sops.rpm | head -n 1)" \
-    xorg-x11-server-Xvfb xorg-x11-xauth ImageMagick dejavu-sans-fonts
+    xorg-x11-server-Xvfb xorg-x11-xauth ImageMagick git dejavu-sans-fonts
 else
   echo "distro-test: no supported package manager found" >&2; exit 1
 fi

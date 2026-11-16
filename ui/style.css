@@ -64,6 +64,29 @@ aside { background: var(--side); border-right: 1px solid var(--line); padding: 1
   white-space: nowrap; direction: rtl; text-align: left; }
 .dir.sub { padding-left: 22px; }
 .filehead .name { overflow-wrap: anywhere; }
+/* A Git repository's heading in the file list, with its branch. */
+.repo { display: flex; align-items: center; gap: 6px; padding: 16px 8px 4px; font-weight: 600; font-size: 13px; }
+.repo:first-child { padding-top: 4px; }
+.repo svg { color: var(--text2); }
+/* The name keeps its room; a long branch name gives way first. */
+.repo .rname { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.branch { margin-left: auto; flex: 0 6 auto; min-width: 44px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 11.5px; font-weight: 400; color: var(--text2); background: var(--hover); border-radius: 999px; padding: 1px 8px; }
+.file .mono { min-width: 0; }
+.gs { margin-left: auto; padding-left: 6px; flex: none; font: 600 11px var(--mono); }
+.gs-modified { color: var(--warn); } .gs-new { color: var(--ok); }
+.s-plain-tracked svg { color: var(--bad); }
+.note.bad { background: var(--bad-bg); color: var(--bad); }
+.note svg { flex: none; }
+.filehead #changesBtn { margin-left: auto; align-self: center; }
+.chg { display: grid; grid-template-columns: 76px minmax(0, 190px) minmax(0, 1fr); gap: 10px; align-items: center;
+  padding: 8px 0; border-bottom: 1px solid var(--line); }
+.chg .ck { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chg .cv { overflow-wrap: anywhere; color: var(--text2); }
+.chg .pill { text-align: center; }
+.pill.chg-added { background: var(--ok-bg); color: var(--ok); } .pill.chg-changed { background: var(--warn-bg); color: var(--warn); }
+.pill.chg-removed { background: var(--bad-bg); color: var(--bad); }
+.recent .file span { direction: rtl; text-align: left; }
 .addfile { color: var(--text2); margin-top: 4px; }
 .sopsinfo { color: var(--muted); font-size: 12px; padding: 14px 8px 2px; }
 

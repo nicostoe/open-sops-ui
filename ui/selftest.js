@@ -22,6 +22,10 @@
   const text = (selector) => q(selector)?.innerText ?? "";
   const shows = (selector, part) => until(`"${part}" in ${selector}`, () => text(selector).includes(part));
 
+  // The sidebar entry for a file, by its name.
+  const fileBtn = (name) => [...document.querySelectorAll("#files .file[data-i]")].find((b) => b.querySelector(".mono").innerText === name);
+  const kinds = () => [...document.querySelectorAll("#dlg .chg")].map((r) => `${r.querySelector(".pill").innerText.trim()} ${r.querySelector(".ck").innerText.trim()}`);
+
   async function click(selector) {
     (await until(`element ${selector}`, () => q(selector))).click();
   }
@@ -58,6 +62,11 @@
     const sub = q("#files .dir.sub");
     check(sub && /^config[\\/]$/.test(sub.innerText.trim()), "a nested folder shows only its own part, under its parent");
     check([...document.querySelectorAll("#files .file[data-i] .mono")].every((e) => !/[\\/]/.test(e.innerText)), "file entries show the name without the path");
+    const repo = q("#files .repo");
+    check(repo && repo.innerText.includes("shop-api") && repo.innerText.includes("main"), "the repository is shown with its branch");
+    check(fileBtn(".env.example").classList.contains("s-plain") && !fileBtn(".env.example").querySelector(".gs"), "a committed example file raises no warning");
+    check(fileBtn(".env.staging").classList.contains("s-plain"), "an ignored plaintext file raises no warning");
+    check(fileBtn(".env.production").classList.contains("s-plain-risk"), "plaintext that Git doesn't ignore is flagged");
     check(text(".sopsinfo").startsWith("sops "), "the app found sops");
     check(q("#keysDot").className === "dot", "a missing key is flagged");
     await shot("01-start-without-key");
@@ -72,8 +81,9 @@
     await shot("03-keys");
     await click("#dlg [data-close]");
 
-    await click("#files .file[data-i]");
+    fileBtn(".env.production").click();
     await until("the variables", () => q("#editor .row"));
+    check(text(".note").includes("Git isn't ignoring it") && q("#ignoreBtn"), "the plaintext warning offers to ignore the file");
     check(document.querySelectorAll("#editor .row").length === 4, "all four variables are shown");
     check(text(".filehead").includes("Not encrypted yet"), "the file is shown as plaintext");
     await shot("04-plaintext-file");
@@ -83,8 +93,16 @@
     await shot("05-encrypt-for");
     await click("#dlg #go");
     await shows(".filehead", "1 recipient");
-    check(q("#files .file").classList.contains("s-ok"), "the file is marked as encrypted and readable");
+    check(fileBtn(".env.production").classList.contains("s-ok"), "the file is marked as encrypted and readable");
+    check(fileBtn(".env.production").querySelector(".gs")?.innerText === "N", "the file is marked as not committed yet");
     await shot("06-encrypted");
+
+    await click("#changesBtn");
+    await until("the changes", () => q("#dlg[open] .chg")); // [open]: a closed dialog keeps its old content
+    check(kinds().length === 4 && kinds().every((k) => k.startsWith("Added")), "a never-committed file lists every variable as added");
+    check(!text("#dlg").includes("sk_test_1"), "values in the comparison are hidden at first");
+    await click("#dlg [data-close]");
+    check(await call("commit", { path: cur.path }), "the test committed the encrypted file");
 
     await click("#editor .row:nth-of-type(2) [data-a=eye]");
     await type("#editor .row:nth-of-type(2) .val", "sk_test_changed");
@@ -99,25 +117,46 @@
     await shows("#dirty", "Saved");
     check(document.querySelectorAll("#editor .row").length === 5, "five variables after saving");
 
+    await until("the modified mark", () => fileBtn(".env.production").querySelector(".gs")?.innerText === "M");
+    await click("#changesBtn");
+    await until("the changes", () => q("#dlg[open] .chg")); // [open]: a closed dialog keeps its old content
+    check(kinds().join(", ") === "Changed STRIPE_SECRET, Added SENTRY_DSN", "the comparison lists exactly what changed since the commit");
+    check(text("#dlg").includes("3 unchanged"), "unchanged variables are counted, not listed");
+    await shot("08-changes-since-commit");
+    await click("#chgReveal");
+    await shows("#dlg", "sk_test_changed");
+    check(text("#dlg").includes("sk_test_1"), "revealing shows the old and the new value");
+    await click("#dlg [data-close]");
+
     await click("#recBtn");
     await shows("#dlg", "You (default)");
-    await shot("08-recipients");
+    await shot("09-recipients");
     await click("#dlg [data-close]");
 
     await type("#editor .row:nth-of-type(1) .val", "unsaved");
     await click("#folderBtn");
     await shows("#dlg2", "Discard unsaved changes?");
-    await shot("09-confirm");
+    await shot("10-confirm");
     await click("#dlg2 #no");
     await click("#revert");
     check(!text("#dirty").includes("Unsaved"), "discarding restores the saved values");
 
+    await click("#folderBtn");
+    await shows("#dlg", "blog");
+    check(document.querySelectorAll("#dlg [data-r]").length === 1, "the other recently opened folder is offered");
+    await shot("11-recent-folders");
+    await click("#dlg [data-close]");
+
     setTheme("dark");
     check(document.documentElement.dataset.theme === "dark", "dark mode is applied");
-    await shot("10-dark");
+    await shot("12-dark");
     await click("#keysBtn");
     await until("the key in the dialog", () => q("#dlg [data-copy]"));
-    await shot("11-dark-keys");
+    await shot("13-dark-keys");
+    await click("#dlg [data-close]");
+    await click("#changesBtn");
+    await until("the changes", () => q("#dlg[open] .chg"));
+    await shot("14-dark-changes");
     await click("#dlg [data-close]");
 
     await call("done", { ok: true, log });
