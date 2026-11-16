@@ -93,7 +93,7 @@ jobs:
           echo "$GITHUB_WORKSPACE/vendor/sops" >> "$GITHUB_PATH"
 
       - name: Test backend
-        run: scripts/ci-annotate.sh "Backend tests failed" cargo test -p sops-env-core
+        run: scripts/ci-annotate.sh "Backend tests failed" cargo test -p open-sops-ui-core
 
       - name: Test backend against the oldest supported sops
         if: runner.os == 'Linux'
@@ -101,7 +101,7 @@ jobs:
           SOPS_SKIP_COSIGN=1 SOPS_VERSION_OVERRIDE="$MIN_SOPS_VERSION" SOPS_OUT_DIR="$RUNNER_TEMP/sops-min" \
             scripts/fetch-sops.sh ${{ matrix.target }}
           PATH="$RUNNER_TEMP/sops-min:$PATH" scripts/ci-annotate.sh "Backend tests failed with $MIN_SOPS_VERSION" \
-            cargo test -p sops-env-core --test flow
+            cargo test -p open-sops-ui-core --test flow
 
       - name: Build packages with sops included
         run: |
@@ -116,9 +116,9 @@ jobs:
       - name: Test the UI in the installed app
         run: |
           case "$RUNNER_OS" in
-            Linux)   app=/usr/bin/sops-env ;;
-            macOS)   app="target/${{ matrix.target }}/release/bundle/macos/Sops Env.app/Contents/MacOS/sops-env" ;;
-            Windows) app="$LOCALAPPDATA/Sops Env/sops-env.exe" ;;
+            Linux)   app=/usr/bin/open-sops-ui ;;
+            macOS)   app="target/${{ matrix.target }}/release/bundle/macos/Open SOPS UI.app/Contents/MacOS/open-sops-ui" ;;
+            Windows) app="$LOCALAPPDATA/Open SOPS UI/open-sops-ui.exe" ;;
           esac
           scripts/ci-annotate.sh "UI test failed" scripts/ui-test.sh "$app" screenshots
 
@@ -132,7 +132,7 @@ jobs:
       # Other macOS versions test this exact bundle without rebuilding it.
       - name: Pack the macOS app for the version tests
         if: runner.os == 'macOS'
-        run: tar -czf app.tar.gz -C target/${{ matrix.target }}/release/bundle/macos "Sops Env.app"
+        run: tar -czf app.tar.gz -C target/${{ matrix.target }}/release/bundle/macos "Open SOPS UI.app"
 
       - uses: actions/upload-artifact@v4
         if: runner.os == 'macOS'
@@ -234,7 +234,7 @@ jobs:
       - name: Unpack the app
         run: |
           tar -xzf app.tar.gz
-          echo "APP=$PWD/Sops Env.app/Contents/MacOS/sops-env" >> "$GITHUB_ENV"
+          echo "APP=$PWD/Open SOPS UI.app/Contents/MacOS/open-sops-ui" >> "$GITHUB_ENV"
 
       - name: Test the UI in the installed app
         run: scripts/ci-annotate.sh "UI test failed on ${{ matrix.name }}" scripts/ui-test.sh "$APP" screenshots

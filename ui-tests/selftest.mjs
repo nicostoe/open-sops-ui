@@ -39,14 +39,14 @@ const EXPECTED = ORIGINAL.replace("sk_test_1", "sk_test_changed") + "SENTRY_DSN=
 const EXPECTED_SHOTS = 11;
 const TIMEOUT_MS = 180_000;
 
-// SOPS_ENV_UI_TEST_ROOT pins the folder, so screenshots show a tidy path
+// OPEN_SOPS_UI_SELFTEST_ROOT pins the folder, so screenshots show a tidy path
 // instead of a random temp name. It must not exist yet.
-const fixedRoot = process.env.SOPS_ENV_UI_TEST_ROOT;
+const fixedRoot = process.env.OPEN_SOPS_UI_SELFTEST_ROOT;
 if (fixedRoot && existsSync(fixedRoot)) {
-  console.error(`${fixedRoot} already exists; SOPS_ENV_UI_TEST_ROOT must point to a new folder`);
+  console.error(`${fixedRoot} already exists; OPEN_SOPS_UI_SELFTEST_ROOT must point to a new folder`);
   process.exit(2);
 }
-const root = fixedRoot ? resolve(fixedRoot) : mkdtempSync(join(tmpdir(), "sops-env-ui-"));
+const root = fixedRoot ? resolve(fixedRoot) : mkdtempSync(join(tmpdir(), "open-sops-ui-test-"));
 const project = join(root, "projects", "shop-api");
 const config = join(root, ".config");
 const keysFile = join(config, "sops", "age", "keys.txt");
@@ -54,6 +54,9 @@ const envFile = join(project, ".env.production");
 mkdirSync(project, { recursive: true });
 mkdirSync(config, { recursive: true });
 writeFileSync(envFile, ORIGINAL);
+mkdirSync(join(project, "services", "worker", "config"), { recursive: true });
+writeFileSync(join(project, "services", "worker", "config", ".env.testing"), "QUEUE_URL=redis://localhost:6379/9\n");
+writeFileSync(join(project, "services", "worker", ".env"), "QUEUE_URL=redis://localhost:6379/1\nCONCURRENCY=4\n");
 writeFileSync(join(project, ".env.staging"), "DATABASE_URL=postgres://shop:dev@localhost:5432/shop_staging\nLOG_LEVEL=debug\n");
 
 // The app, its web view and sops keep their data here instead of the real profile.
@@ -92,7 +95,7 @@ try {
   if (!sops) throw new Error("the app found no sops binary");
 
   console.log("running the scripted UI test in the app window");
-  const code = await runApp([project], { SOPS_ENV_UI_TEST: out });
+  const code = await runApp([project], { OPEN_SOPS_UI_SELFTEST: out });
   const resultFile = join(out, "result.json");
   const result = existsSync(resultFile) ? JSON.parse(readFileSync(resultFile, "utf8")) : null;
   for (const line of result?.log ?? []) console.log(`  app: ${line}`);

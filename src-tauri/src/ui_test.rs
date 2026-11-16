@@ -1,6 +1,6 @@
 //! Support for the scripted UI self-test.
 //!
-//! When the app is started with `SOPS_ENV_UI_TEST=<folder>`, the frontend
+//! When the app is started with `OPEN_SOPS_UI_SELFTEST=<folder>`, the frontend
 //! loads `ui/selftest.js`, which clicks through the app in its real window.
 //! That works on every platform, including macOS, where no WebDriver exists
 //! for the system web view. This module gives the script what the page can't
@@ -14,7 +14,7 @@ use std::process::{Command, Stdio};
 use serde_json::{json, Value};
 
 fn output_dir() -> Option<PathBuf> {
-    std::env::var_os("SOPS_ENV_UI_TEST")
+    std::env::var_os("OPEN_SOPS_UI_SELFTEST")
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
 }
@@ -44,7 +44,7 @@ fn screenshot(file: &Path) -> bool {
     } else {
         // ImageMagick; needs an X11 display (Xvfb in CI).
         let mut c = Command::new("import");
-        c.args(["-window", "Sops Env", &path]);
+        c.args(["-window", "Open SOPS UI", &path]);
         c
     };
     cmd.stdin(Stdio::null())

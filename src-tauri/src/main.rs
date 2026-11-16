@@ -6,8 +6,8 @@ mod ui_test;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use open_sops_ui_core::App;
 use serde_json::Value;
-use sops_env_core::App;
 use tauri::Manager;
 
 struct Shared(Mutex<App>);
@@ -42,11 +42,11 @@ fn bundled_dirs(exe: &Path, resource_dir: Option<PathBuf>) -> Vec<PathBuf> {
     dirs
 }
 
-/// `sops-env --self-check [file]` reports, without opening a window, which
+/// `open-sops-ui --self-check [file]` reports, without opening a window, which
 /// sops the installed app would use. CI runs it against the built packages.
 /// The report also goes to `file`, because a Windows GUI binary has no console.
 fn self_check(bundled: &[PathBuf], version: &str, out_file: Option<&String>) -> ! {
-    let report = sops_env_core::self_check(bundled, version);
+    let report = open_sops_ui_core::self_check(bundled, version);
     let text = serde_json::to_string_pretty(&report).unwrap_or_default();
     if let Some(path) = out_file {
         if std::fs::write(path, &text).is_err() {
@@ -63,7 +63,7 @@ fn self_check(bundled: &[PathBuf], version: &str, out_file: Option<&String>) -> 
 
 fn main() {
     // `sops edit` starts this same binary as its editor; see the core crate.
-    if let Some(code) = sops_env_core::run_as_editor_if_requested() {
+    if let Some(code) = open_sops_ui_core::run_as_editor_if_requested() {
         std::process::exit(code);
     }
 
@@ -95,5 +95,5 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![api, ui_test::ui_test])
         .run(context)
-        .expect("failed to start sops-env");
+        .expect("failed to start open-sops-ui");
 }

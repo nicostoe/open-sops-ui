@@ -1,22 +1,22 @@
-# Agent guide for Sops Env
+# Agent guide for Open SOPS UI
 
 A Tauri 2 desktop app for SOPS-encrypted env files. See [README.md](README.md) for what it does and how to build it.
 
 ## Layout
 
-- `core/`: the `sops-env-core` crate. All backend logic: keys, env parsing, `.sops.yaml` rules, calls to `sops`. No GUI dependencies, so it compiles and tests without WebKit.
+- `core/`: the `open-sops-ui-core` crate. All backend logic: keys, env parsing, `.sops.yaml` rules, calls to `sops`. No GUI dependencies, so it compiles and tests without WebKit.
   - `src/lib.rs`: `App::handle(action, body)` is the single entry point the UI calls.
   - `tests/flow.rs`: end-to-end test against a real `sops`.
   - `src/bin/edit-helper.rs`: test-only stand-in for the app's editor mode.
 - `src-tauri/`: the desktop shell. `src/main.rs` wires one `api` command to `App::handle`. `tauri.conf.json` holds window, CSP and bundle settings; `capabilities/default.json` the permissions.
 - `ui/`: the frontend. `index.html`, `style.css`, `app.js`. Vanilla JS, no bundler, no dependencies.
-- `ui/selftest.js` and `src-tauri/src/ui_test.rs`: the scripted UI self-test. With `SOPS_ENV_UI_TEST=<folder>` set, the app clicks through itself, takes screenshots and exits. Inactive otherwise.
+- `ui/selftest.js` and `src-tauri/src/ui_test.rs`: the scripted UI self-test. With `OPEN_SOPS_UI_SELFTEST=<folder>` set, the app clicks through itself, takes screenshots and exits. Inactive otherwise.
 - `ui-tests/selftest.mjs`: runs that test against a binary with throwaway folders and checks the files on disk. Plain Node, no dependencies.
 - `.github/workflows/build.yml`: on pull requests, pushes to `main`, weekly, and called by the release workflow. Jobs: `build` (tests, packages, smoke test and UI test per platform), `distros` (packages installed and UI-tested in distribution containers), `os-versions` (UI test on the older macOS runners), `screenshots` (one artifact with every platform's pictures).
 - `.github/workflows/release.yml`: on `v*` tags. Checks the tag against `tauri.conf.json`, calls `build.yml`, then publishes a GitHub release. A tag with a `-suffix` becomes a pre-release.
 - `.github/workflows/audit.yml`: weekly `cargo audit` and `npm audit`.
 - `scripts/fetch-sops.sh`: downloads the pinned sops into `vendor/sops/` (git-ignored) and verifies it with cosign and SHA-256. The `SOPS_VERSION` line carries a Renovate comment; keep its format, `renovate.json` matches it with a regex.
-- `scripts/smoke-test.sh`: installs the built package and runs `sops-env --self-check` (CI only; it installs the app).
+- `scripts/smoke-test.sh`: installs the built package and runs `open-sops-ui --self-check` (CI only; it installs the app).
 - `scripts/ui-test.sh`, `scripts/distro-test.sh`: run the UI test, on a runner or inside a distribution container.
 - `scripts/collect-bundles.sh`, `scripts/ci-annotate.sh`: CI helpers for package names and public failure annotations.
 - `app-icon.svg`: icon source. Regenerate with `npx tauri icon app-icon.svg`, then delete `src-tauri/icons/android` and `ios`.
@@ -24,7 +24,7 @@ A Tauri 2 desktop app for SOPS-encrypted env files. See [README.md](README.md) f
 ## Commands
 
 ```bash
-cargo test -p sops-env-core
+cargo test -p open-sops-ui-core
 ```
 
 ```bash
@@ -58,11 +58,11 @@ npm run build
 
 The project is kept up to date by Renovate with auto-merge, so the tests are the safety net. Every change needs a test that would fail without it.
 
-- **Backend:** `cargo test -p sops-env-core`. `tests/flow.rs` is one end-to-end flow against a real sops; extend it when you add or change an action. Set `SOPS_ENV_TEST_EDITOR` to the built desktop binary to run the same flow through its editor mode.
-- **UI:** `node ui-tests/selftest.mjs target/release/sops-env`. The steps live in `ui/selftest.js`; extend them when you change `ui/` or add a flow, add a `shot(...)` for every new screen, and update `EXPECTED` and `EXPECTED_SHOTS` in `ui-tests/selftest.mjs`. Native file dialogs can't be driven; the test passes the folder as an argument instead. Wait for a specific element, never for text that is also in a static hint.
+- **Backend:** `cargo test -p open-sops-ui-core`. `tests/flow.rs` is one end-to-end flow against a real sops; extend it when you add or change an action. Set `OPEN_SOPS_UI_TEST_EDITOR` to the built desktop binary to run the same flow through its editor mode.
+- **UI:** `node ui-tests/selftest.mjs target/release/open-sops-ui`. The steps live in `ui/selftest.js`; extend them when you change `ui/` or add a flow, add a `shot(...)` for every new screen, and update `EXPECTED` and `EXPECTED_SHOTS` in `ui-tests/selftest.mjs`. Native file dialogs can't be driven; the test passes the folder as an argument instead. Wait for a specific element, never for text that is also in a static hint.
 - **README pictures:** `docs/screenshots/` comes from the same UI test. After a visible UI change, regenerate with `scripts/readme-screenshots.sh <with-sops .deb>` (needs Docker); it runs in a clean container so no local paths end up in the pictures.
 - **Screenshots:** every CI run publishes a `screenshots` artifact. Look at them after changing styles or layout; they have already caught a rendering bug no assertion would.
-- **Packages:** `sops-env --self-check [file]` reports as JSON which sops the app would use, without opening a window. `scripts/smoke-test.sh` relies on it.
+- **Packages:** `open-sops-ui --self-check [file]` reports as JSON which sops the app would use, without opening a window. `scripts/smoke-test.sh` relies on it.
 - **Tested systems:** the "Tested on" table in the README mirrors the matrices in `build.yml`. Change both together.
 - **sops versions:** CI tests the pinned version on all platforms and the oldest supported one on Linux. The floor is `MIN_SOPS_VERSION` in `core/src/lib.rs` and in `build.yml`; change both together, and the README.
 - Tests set `XDG_CONFIG_HOME` (and `AppData`) to a temp folder. Do the same when running the app by hand, so the real `keys.txt` and config are never touched.

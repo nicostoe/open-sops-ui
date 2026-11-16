@@ -27,9 +27,9 @@ fi
 
 . /etc/os-release
 echo "distro-test: $PRETTY_NAME"
-sops-env --self-check /tmp/self-check.json
+open-sops-ui --self-check /tmp/self-check.json
 grep -q '"source": "bundled"' /tmp/self-check.json
 
 # Containers have no user session: no sandbox helper and no GPU.
 export WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1 WEBKIT_DISABLE_COMPOSITING_MODE=1 LIBGL_ALWAYS_SOFTWARE=1
-scripts/ui-test.sh "$(command -v sops-env)" "$out"
+scripts/ui-test.sh "$(command -v open-sops-ui)" "$out"

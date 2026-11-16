@@ -1,7 +1,7 @@
 //! End-to-end test against a real `sops` binary with throwaway keys.
 //! Everything runs inside a temp folder; the user's own keys.txt is never read.
+use open_sops_ui_core::App;
 use serde_json::{json, Value};
-use sops_env_core::App;
 use std::path::PathBuf;
 
 fn pubs(state: &Value, kind: &str) -> Vec<String> {
@@ -27,7 +27,7 @@ fn status(state: &Value, name: &str) -> String {
 
 #[test]
 fn full_flow() {
-    let root = std::env::temp_dir().join(format!("sops-env-test-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("open-sops-ui-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let demo = root.join("demo");
     std::fs::create_dir_all(&demo).unwrap();
@@ -37,8 +37,8 @@ fn full_flow() {
     std::env::remove_var("SOPS_AGE_KEY_FILE");
     std::env::remove_var("SOPS_AGE_KEY");
 
-    // SOPS_ENV_TEST_EDITOR lets the same test exercise the desktop binary's editor mode.
-    let helper = std::env::var_os("SOPS_ENV_TEST_EDITOR")
+    // OPEN_SOPS_UI_TEST_EDITOR lets the same test exercise the desktop binary's editor mode.
+    let helper = std::env::var_os("OPEN_SOPS_UI_TEST_EDITOR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_edit-helper")));
     let mut app = App::new(Some(demo.clone()), vec![], helper.clone());

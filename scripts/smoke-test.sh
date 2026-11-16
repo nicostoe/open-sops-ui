@@ -27,7 +27,7 @@ first() { ls "$@" 2>/dev/null | head -n 1; }
 case "$target" in
   *-linux-*)
     sudo dpkg -i "$(first "$src"/deb/*.deb)"
-    check "deb" sops-env
+    check "deb" open-sops-ui
     appimage="$(first "$src"/appimage/*.AppImage)"
     chmod +x "$appimage"
     check "AppImage" "$appimage" --appimage-extract-and-run
@@ -35,14 +35,14 @@ case "$target" in
   *-apple-darwin)
     # The .dmg only wraps this bundle; running it in place avoids mounting
     # a disk image on the runner.
-    check "app bundle" "$src/macos/Sops Env.app/Contents/MacOS/sops-env"
+    check "app bundle" "$src/macos/Open SOPS UI.app/Contents/MacOS/open-sops-ui"
     ls "$src"/dmg/*.dmg >/dev/null
     ;;
   *-windows-*)
     setup="$(cygpath -w "$(first "$src"/nsis/*.exe)")"
     powershell -NoProfile -Command "Start-Process -Wait -FilePath '$setup' -ArgumentList '/S'"
     report="$(cygpath -w "$report")"
-    check "setup.exe" "$LOCALAPPDATA/Sops Env/sops-env.exe"
+    check "setup.exe" "$LOCALAPPDATA/Open SOPS UI/open-sops-ui.exe"
     ;;
   *) echo "smoke-test: unsupported target: $target" >&2; exit 1 ;;
 esac

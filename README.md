@@ -1,4 +1,4 @@
-# Sops Env
+# Open SOPS UI
 
 A desktop app for viewing, editing and encrypting env files with [SOPS](https://github.com/getsops/sops) and age keys. Built with [Tauri](https://tauri.app) for Linux, Windows and macOS.
 
@@ -45,10 +45,10 @@ Other systems may work but aren't checked. The Linux packages need at least the 
    | macOS | `.dmg` |
    | Windows | `.msi` or `-setup.exe` |
 
-3. Start "Sops Env" from your app menu, or from a terminal with a project folder:
+3. Start "Open SOPS UI" from your app menu, or from a terminal with a project folder:
 
    ```bash
-   sops-env path/to/project
+   open-sops-ui path/to/project
    ```
 
 A `sops` binary shipped with the app, or placed next to it, is used first; otherwise the one on your `PATH`.
@@ -102,13 +102,13 @@ The bundled `sops` version is pinned in `scripts/fetch-sops.sh`. The script veri
 Backend, against your installed `sops` with throwaway keys in a temp folder (skipped when `sops` isn't installed):
 
 ```bash
-cargo test -p sops-env-core
+cargo test -p open-sops-ui-core
 ```
 
 UI: the app clicks through itself in its real window, takes a screenshot at each stage, and the result is checked on disk with `sops`. It needs a display and, on Linux, ImageMagick for the screenshots:
 
 ```bash
-node ui-tests/selftest.mjs target/release/sops-env
+node ui-tests/selftest.mjs target/release/open-sops-ui
 ```
 
 Screenshots land in `ui-test-output/`. The test uses its own temp folders; your keys and config aren't touched.
@@ -141,7 +141,7 @@ Not covered by any test: native file dialogs, the clipboard, the `.msi` installe
 | macOS | `$XDG_CONFIG_HOME/sops/age/keys.txt` or `~/Library/Application Support/sops/age/keys.txt` |
 | Windows | `%AppData%\sops\age\keys.txt` |
 
-Custom key paths, saved recipients and the last folder are stored in `sops-env/config.json` next to the `sops` folder above. Secret keys are never written there.
+Custom key paths, saved recipients and the last folder are stored in `open-sops-ui/config.json` next to the `sops` folder above. Secret keys are never written there.
 
 ## Limits
 

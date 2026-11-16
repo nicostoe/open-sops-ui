@@ -1,9 +1,9 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Sops Env",
-  "mainBinaryName": "sops-env",
+  "productName": "Open SOPS UI",
+  "mainBinaryName": "open-sops-ui",
   "version": "0.1.0",
-  "identifier": "io.github.sops-env",
+  "identifier": "io.github.nicostoe.open-sops-ui",
   "build": {
     "frontendDist": "../ui"
   },
@@ -12,7 +12,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Sops Env",
+        "title": "Open SOPS UI",
         "width": 1000,
         "height": 660,
         "minWidth": 640,

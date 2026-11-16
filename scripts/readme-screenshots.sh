@@ -21,9 +21,9 @@ docker run --rm -v "$root":/src:ro -v "$deb":/pkg/app.deb:ro -v "$out":/out -w /
   apt-get update -q >/dev/null
   apt-get install -y -q --no-install-recommends /pkg/app.deb xvfb xauth imagemagick nodejs \
     fonts-inter fonts-jetbrains-mono >/dev/null
-  export SOPS_ENV_UI_TEST_ROOT=/home/demo
+  export OPEN_SOPS_UI_SELFTEST_ROOT=/home/demo
   export WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1 WEBKIT_DISABLE_COMPOSITING_MODE=1 LIBGL_ALWAYS_SOFTWARE=1
-  scripts/ui-test.sh /usr/bin/sops-env /out
+  scripts/ui-test.sh /usr/bin/open-sops-ui /out
   chmod -R a+rwX /out
 '
 

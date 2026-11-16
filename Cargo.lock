@@ -2717,6 +2717,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
+name = "open-sops-ui"
+version = "0.1.0"
+dependencies = [
+ "open-sops-ui-core",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-clipboard-manager",
+ "tauri-plugin-dialog",
+]
+
+[[package]]
+name = "open-sops-ui-core"
+version = "0.1.0"
+dependencies = [
+ "age",
+ "regex",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+]
+
+[[package]]
 name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3826,29 +3849,6 @@ dependencies = [
  "wasm-bindgen",
  "web-sys",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "sops-env"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "sops-env-core",
- "tauri",
- "tauri-build",
- "tauri-plugin-clipboard-manager",
- "tauri-plugin-dialog",
-]
-
-[[package]]
-name = "sops-env-core"
-version = "0.1.0"
-dependencies = [
- "age",
- "regex",
- "serde",
- "serde_json",
- "serde_yaml",
 ]
 
 [[package]]

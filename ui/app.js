@@ -83,9 +83,27 @@ function isDirty() {
 }
 function renderFiles() {
   const icon = { ok: "lock", locked: "lock", plain: "unlock", "plain-risk": "unlock", missing: "file" };
-  $("#files").innerHTML = S.files.map((f, i) =>
-    `<button class="file s-${f.status} ${cur && cur.path === f.path ? "active" : ""}" data-i="${i}" title="${esc(f.note)}">
-      ${ic(icon[f.status])}<span class="mono">${esc(f.name)}</span></button>`).join("") +
+  // Files are grouped under their folder, so long paths don't push the
+  // file name out of view. Files directly in the project come first.
+  const groups = new Map();
+  S.files.forEach((f, i) => {
+    const cut = Math.max(f.name.lastIndexOf("/"), f.name.lastIndexOf("\\"));
+    const dir = cut < 0 ? "" : f.name.slice(0, cut + 1);
+    if (!groups.has(dir)) groups.set(dir, []);
+    groups.get(dir).push({ f, i, base: f.name.slice(cut + 1) });
+  });
+  const button = ({ f, i, base }) =>
+    `<button class="file s-${f.status} ${cur && cur.path === f.path ? "active" : ""}" data-i="${i}" title="${esc(f.name)}\n${esc(f.note)}">
+      ${ic(icon[f.status])}<span class="mono">${esc(base)}</span></button>`;
+  const dirs = [...groups.keys()].filter((d) => d).sort((a, b) => a.localeCompare(b));
+  $("#files").innerHTML = (groups.get("") || []).map(button).join("") +
+    dirs.map((d) => {
+      // A subfolder listed right under its parent shows only the rest of its path, indented.
+      const parent = dirs.filter((p) => p !== d && d.startsWith(p)).sort((x, y) => y.length - x.length)[0];
+      const label = parent ? d.slice(parent.length) : d;
+      return `<div class="dir mono${parent ? " sub" : ""}" title="${esc(d)}"><bdi>${esc(label)}</bdi></div>` +
+        groups.get(d).map(button).join("");
+    }).join("") +
     (S.files.length ? "" : `<div class="muted small" style="padding:6px 8px">No env files in this folder.</div>`) +
     `<button class="file addfile" id="addFile">${ic("plus")}<span>Open file</span></button>` +
     (S.sops.path ? `<div class="sopsinfo" title="${esc(S.sops.path)}">sops ${esc(S.sops.version)} · ${S.sops.source}</div>` : "");
@@ -380,7 +398,7 @@ try {
 
 api("state").then((s) => { setState(s); renderEditor(); }).catch(fail);
 
-// Scripted self-test: loaded only when the app was started with SOPS_ENV_UI_TEST set.
+// Scripted self-test: loaded only when the app was started with OPEN_SOPS_UI_SELFTEST set.
 T.core.invoke("ui_test", { action: "config", body: {} }).then((on) => {
   if (on) document.body.appendChild(Object.assign(document.createElement("script"), { src: "selftest.js" }));
 }).catch(() => {});

@@ -1,4 +1,4 @@
-//! Backend logic for sops-env. No GUI code lives here, so it can be tested
+//! Backend logic for open-sops-ui. No GUI code lives here, so it can be tested
 //! on its own against a real `sops` binary.
 //!
 //! The UI talks to [`App::handle`] with an action name and a JSON body.
@@ -19,8 +19,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 const DOTENV: [&str; 4] = ["--input-type", "dotenv", "--output-type", "dotenv"];
-const EDIT_ADDR: &str = "SOPS_ENV_EDIT_ADDR";
-const EDIT_TOKEN: &str = "SOPS_ENV_EDIT_TOKEN";
+const EDIT_ADDR: &str = "OPEN_SOPS_UI_EDIT_ADDR";
+const EDIT_TOKEN: &str = "OPEN_SOPS_UI_EDIT_TOKEN";
 
 type Res<T> = Result<T, String>;
 
@@ -148,14 +148,14 @@ pub fn default_key_path() -> PathBuf {
 }
 
 fn config_path() -> PathBuf {
-    config_base().join("sops-env").join("config.json")
+    config_base().join("open-sops-ui").join("config.json")
 }
 
 /// sops looks for .sops.yaml upward from its working directory and fails when
 /// one exists but no rule matches, even with explicit recipients. Calls that
 /// must not depend on a project's config run from this folder instead.
 fn neutral_dir() -> Option<PathBuf> {
-    let dir = config_base().join("sops-env");
+    let dir = config_base().join("open-sops-ui");
     std::fs::create_dir_all(&dir).ok().map(|_| dir)
 }
 
@@ -180,7 +180,11 @@ struct BookEntry {
 }
 
 fn load_config() -> Config {
+    // The app was called "Sops Env" in its first pre-releases; fall back to
+    // that config so custom key paths and saved recipients carry over.
+    let legacy = config_base().join("sops-env").join("config.json");
     std::fs::read_to_string(config_path())
+        .or_else(|_| std::fs::read_to_string(legacy))
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default()

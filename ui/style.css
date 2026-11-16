@@ -59,6 +59,11 @@ aside { background: var(--side); border-right: 1px solid var(--line); padding: 1
 .file span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .s-ok svg { color: var(--ok); } .s-locked svg { color: var(--bad); } .s-plain-risk svg { color: var(--warn); }
 .s-plain svg, .s-missing svg { color: var(--muted); }
+/* Folder heading in the file list; a long path is cut on the left so its end stays readable. */
+.dir { color: var(--muted); font-size: 12px; padding: 12px 8px 3px; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; direction: rtl; text-align: left; }
+.dir.sub { padding-left: 22px; }
+.filehead .name { overflow-wrap: anywhere; }
 .addfile { color: var(--text2); margin-top: 4px; }
 .sopsinfo { color: var(--muted); font-size: 12px; padding: 14px 8px 2px; }
 

@@ -1,5 +1,5 @@
 // Scripted UI self-test. app.js loads this file only when the app was started
-// with SOPS_ENV_UI_TEST set; it never runs for a normal user.
+// with OPEN_SOPS_UI_SELFTEST set; it never runs for a normal user.
 //
 // It clicks through the main flows in the real window, takes a screenshot at
 // each stage, and reports to the backend, which writes result.json and exits.
@@ -53,6 +53,11 @@
     setTheme("light");
     await until("the file list", () => q("#files .file[data-i]"));
     check(text("#files").includes(".env.production") && text("#files").includes(".env.staging"), "both env files are listed");
+    const dir = q("#files .dir");
+    check(dir && /services[\\/]worker[\\/]$/.test(dir.innerText.trim()), "a file in a subfolder is grouped under its folder");
+    const sub = q("#files .dir.sub");
+    check(sub && /^config[\\/]$/.test(sub.innerText.trim()), "a nested folder shows only its own part, under its parent");
+    check([...document.querySelectorAll("#files .file[data-i] .mono")].every((e) => !/[\\/]/.test(e.innerText)), "file entries show the name without the path");
     check(text(".sopsinfo").startsWith("sops "), "the app found sops");
     check(q("#keysDot").className === "dot", "a missing key is flagged");
     await shot("01-start-without-key");
