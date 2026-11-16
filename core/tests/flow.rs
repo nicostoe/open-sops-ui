@@ -305,7 +305,13 @@ fn git_flow(app: &mut App, root: &std::path::Path, key: &str) {
     write("config/prod.env", "KEEP=1\nCHANGE=old\nDROP=x\n");
     std::fs::write(work.join("loose.env"), "Z=1\n").unwrap();
 
-    let path = |rel: &str| repo.join(rel).to_string_lossy().to_string();
+    // Built part by part, so the separators match what the app reports on Windows.
+    let path = |rel: &str| {
+        rel.split('/')
+            .fold(repo.clone(), |p, part| p.join(part))
+            .to_string_lossy()
+            .to_string()
+    };
     app.handle("setFolder", &json!({ "path": work.to_string_lossy() }))
         .unwrap();
     let kv = |pairs: &[(&str, &str)]| -> Value {
