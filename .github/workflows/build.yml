@@ -140,7 +140,7 @@ jobs:
           esac
           scripts/ci-annotate.sh "UI test failed" scripts/ui-test.sh "$app" screenshots
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: screenshots-${{ matrix.target }}
@@ -152,7 +152,7 @@ jobs:
         if: runner.os == 'macOS'
         run: tar -czf app.tar.gz -C target/${{ matrix.target }}/release/bundle/macos "Open SOPS UI.app"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: runner.os == 'macOS'
         with:
           name: app-${{ matrix.target }}
@@ -163,7 +163,7 @@ jobs:
           npm run build -- --target ${{ matrix.target }}
           scripts/collect-bundles.sh ${{ matrix.target }} dist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: packages-${{ matrix.target }}
           if-no-files-found: error
@@ -203,7 +203,7 @@ jobs:
         with:
           node-version: 26
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: packages-x86_64-unknown-linux-gnu
           path: packages
@@ -215,7 +215,7 @@ jobs:
         if: always()
         run: echo "SHOTS=screenshots-$(echo '${{ matrix.image }}' | tr ':/' '--')" >> "$GITHUB_ENV"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: ${{ env.SHOTS }}
@@ -245,7 +245,7 @@ jobs:
         with:
           node-version: 26
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: app-${{ matrix.target }}
 
@@ -257,7 +257,7 @@ jobs:
       - name: Test the UI in the installed app
         run: scripts/ci-annotate.sh "UI test failed on ${{ matrix.name }}" scripts/ui-test.sh "$APP" screenshots
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: screenshots-${{ matrix.os }}
@@ -272,7 +272,7 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: screenshots-*
           path: all
@@ -294,7 +294,7 @@ jobs:
             echo "Download the \`screenshots\` artifact of this run to look at them."
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: screenshots
           path: all/
