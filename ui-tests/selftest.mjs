@@ -36,7 +36,7 @@ const ORIGINAL = [
   "",
 ].join("\n");
 const EXPECTED = ORIGINAL.replace("sk_test_1", "sk_test_changed") + "SENTRY_DSN=https://abc123@sentry.example/42\n";
-const EXPECTED_SHOTS = 17;
+const EXPECTED_SHOTS = 18;
 const TIMEOUT_MS = 180_000;
 
 // OPEN_SOPS_UI_SELFTEST_ROOT pins the folder, so screenshots show a tidy path
@@ -139,6 +139,15 @@ try {
     failures.push(`sops couldn't decrypt the file: ${e.message.split("\n")[0]}`);
   }
   check(decrypted === EXPECTED, "sops decrypts it to the edited content, comment included");
+  let created = "";
+  try {
+    created = execFileSync(sops, ["decrypt", "--input-type", "dotenv", "--output-type", "dotenv", join(project, ".env.ci")], {
+      env: { ...env, SOPS_AGE_KEY_FILE: keysFile }, encoding: "utf8",
+    }).replace(/\r\n/g, "\n");
+  } catch (e) {
+    failures.push(`sops couldn't decrypt the new file: ${e.message.split("\n")[0]}`);
+  }
+  check(created === "CI_TOKEN=abc123\n", "the file created in the app decrypts to what was entered");
 
   const shots = readdirSync(out).filter((f) => f.endsWith(".png")).sort();
   const usable = shots.filter((f) => statSync(join(out, f)).size > 5000);

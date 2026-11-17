@@ -388,6 +388,84 @@ fn robustness_flow(app: &mut App, root: &std::path::Path, key: &str) {
     assert_eq!(added.matches("AGE-SECRET-KEY-").count(), 1);
     std::fs::remove_file(&keys_txt).unwrap();
 
+    // A new encrypted file: checked first, created only with content, never over an existing one.
+    let d = dir.to_string_lossy().to_string();
+    let check =
+        |app: &mut App, name: &str| app.handle("checkNewFile", &json!({ "dir": d, "name": name }));
+    for (name, why) in [
+        ("../x.env", "without folders"),
+        ("sub/x.env", "without folders"),
+        ("notes.txt", "with env in it"),
+        ("utf16.env", "already exists"),
+    ] {
+        let err = check(app, name).unwrap_err();
+        assert!(err.contains(why), "{name}: {err}");
+    }
+    let missing = app.handle(
+        "checkNewFile",
+        &json!({ "dir": root.join("nope").to_string_lossy(), "name": ".env" }),
+    );
+    assert!(missing.unwrap_err().contains("doesn't exist"));
+    let ok = check(app, ".env.ci").unwrap();
+    assert_eq!(ok["hasRule"], false);
+    assert!(
+        !dir.join(".env.ci").exists(),
+        "checking a name writes nothing"
+    );
+    let ci = json!([{ "t": "kv", "k": "CI_TOKEN", "v": "abc 123" }, { "t": "raw", "text": "# deploy" }, { "t": "kv", "k": "REGION", "v": "eu" }]);
+    let create = |app: &mut App, name: &str, items: &Value, recipients: Value| {
+        app.handle(
+            "create",
+            &json!({ "dir": d, "name": name, "items": items, "recipients": recipients }),
+        )
+    };
+    assert!(create(app, ".env.ci", &json!([]), json!([key]))
+        .unwrap_err()
+        .contains("at least one variable"));
+    assert!(create(app, ".env.ci", &ci, json!([]))
+        .unwrap_err()
+        .contains("recipient"));
+    assert!(
+        !dir.join(".env.ci").exists(),
+        "a refused create writes nothing"
+    );
+    let made = create(app, ".env.ci", &ci, json!([key])).unwrap();
+    assert_eq!(made["file"]["items"], ci);
+    assert_eq!(made["file"]["encrypted"], true);
+    assert!(!std::fs::read_to_string(dir.join(".env.ci"))
+        .unwrap()
+        .contains("abc 123"));
+    assert_eq!(status(&made["state"], ".env.ci"), "ok");
+    let before = std::fs::read(dir.join(".env.ci")).unwrap();
+    assert!(create(app, ".env.ci", &ci, json!([key]))
+        .unwrap_err()
+        .contains("already exists"));
+    assert_eq!(
+        std::fs::read(dir.join(".env.ci")).unwrap(),
+        before,
+        "an existing file is never replaced"
+    );
+    // With a matching .sops.yaml rule, no recipients are needed.
+    let ruled = dir.join("ruled");
+    std::fs::create_dir_all(&ruled).unwrap();
+    std::fs::write(
+        ruled.join(".sops.yaml"),
+        format!("creation_rules:\n  - age: {key}\n"),
+    )
+    .unwrap();
+    let r = ruled.to_string_lossy().to_string();
+    let checked = app
+        .handle("checkNewFile", &json!({ "dir": r, "name": "prod.env" }))
+        .unwrap();
+    assert_eq!(checked["hasRule"], true);
+    let made = app
+        .handle(
+            "create",
+            &json!({ "dir": r, "name": "prod.env", "items": [{ "t": "kv", "k": "A", "v": "1" }] }),
+        )
+        .unwrap();
+    assert_eq!(made["file"]["recipients"][0]["key"], key);
+
     // The clipboard setting has a default, validates and is stored.
     assert_eq!(state["settings"]["clipboardClearSeconds"], 60);
     let state = app

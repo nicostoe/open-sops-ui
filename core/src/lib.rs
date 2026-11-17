@@ -1113,6 +1113,18 @@ impl App {
     /// Encrypts plaintext from stdin and writes the result to `file`.
     /// With `recipients == None` the matching .sops.yaml rule decides.
     fn encrypt_to(&self, file: &Path, plaintext: &str, recipients: Option<&[String]>) -> Res<()> {
+        let encrypted = self.encrypt_text(file, plaintext, recipients)?;
+        std::fs::write(file, encrypted).map_err(io_msg)
+    }
+
+    /// Encrypts plaintext from stdin as if it were `file`, which needn't exist.
+    /// With `recipients == None` the matching .sops.yaml rule decides.
+    fn encrypt_text(
+        &self,
+        file: &Path,
+        plaintext: &str,
+        recipients: Option<&[String]>,
+    ) -> Res<String> {
         let path = file.to_string_lossy();
         let joined = recipients.map(|r| r.join(","));
         let mut args = vec!["encrypt"];
@@ -1131,7 +1143,78 @@ impl App {
         if out.code != 0 {
             return Err(sops_error(&out.stderr));
         }
-        std::fs::write(file, out.stdout).map_err(io_msg)
+        Ok(out.stdout)
+    }
+
+    /// Where a new file would go, after checking the folder and name. Nothing
+    /// is written; `create` does that once there is content to encrypt.
+    fn new_file_path(&self, dir: &str, name: &str) -> Res<PathBuf> {
+        let dir = PathBuf::from(dir);
+        if !dir.is_dir() {
+            return Err("That folder doesn't exist.".into());
+        }
+        let name = name.trim();
+        if name.is_empty() || name.contains(['/', '\\']) || name == "." || name == ".." {
+            return Err("Enter a file name without folders, such as .env.production.".into());
+        }
+        if !looks_like_env(name) {
+            return Err("Use a name with env in it, such as .env.production or prod.env, so the app lists it.".into());
+        }
+        let path = dir.join(name);
+        if path.exists() {
+            return Err(
+                "A file with that name already exists. Open it instead, or choose another name."
+                    .into(),
+            );
+        }
+        Ok(path)
+    }
+
+    /// Creates a new encrypted env file. The content goes to sops through
+    /// stdin and only the encrypted result is written, to a file that must
+    /// not exist yet: an existing file is never replaced.
+    fn create_file(
+        &mut self,
+        dir: &str,
+        name: &str,
+        items: &[Item],
+        recipients: &[String],
+    ) -> Res<PathBuf> {
+        let path = self.new_file_path(dir, name)?;
+        if !items.iter().any(|i| matches!(i, Item::Kv { .. })) {
+            return Err("Add at least one variable.".into());
+        }
+        let plaintext = serialize_env(items)?;
+        let encrypted = match rule_recipients(&path) {
+            Some(_) => self.encrypt_text(&path, &plaintext, None)?,
+            None if recipients.is_empty() => {
+                return Err("Choose at least one recipient to encrypt for.".into())
+            }
+            None => {
+                if recipients.iter().any(|k| !valid_public_key(k)) {
+                    return Err("That isn't a valid age public key.".into());
+                }
+                self.encrypt_text(&path, &plaintext, Some(recipients))?
+            }
+        };
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::AlreadyExists {
+                    "A file with that name was just created by something else. Choose another name."
+                        .to_string()
+                } else {
+                    io_msg(e)
+                }
+            })?;
+        file.write_all(encrypted.as_bytes()).map_err(io_msg)?;
+        // Deeper than the folder scan reaches, or outside the folder: keep it listed.
+        if !self.extra_files.contains(&path) {
+            self.extra_files.push(path.clone());
+        }
+        Ok(path)
     }
 
     /// Saves the variables to `file`. `opened_rev` is the fingerprint the file
@@ -1464,6 +1547,24 @@ impl App {
                 self.remember_folder();
                 self.save_config()?;
                 Ok(self.state())
+            }
+
+            "checkNewFile" => {
+                let path = self.new_file_path(&text("dir"), &text("name"))?;
+                Ok(
+                    json!({ "path": path.to_string_lossy(), "hasRule": rule_recipients(&path).is_some() }),
+                )
+            }
+
+            "create" => {
+                let items: Vec<Item> =
+                    serde_json::from_value(body.get("items").cloned().unwrap_or(Value::Null))
+                        .map_err(|_| "The file content couldn't be read.".to_string())?;
+                let path =
+                    self.create_file(&text("dir"), &text("name"), &items, &list("recipients"))?;
+                Ok(
+                    json!({ "state": self.state(), "file": self.open_file(&path)?, "path": path.to_string_lossy() }),
+                )
             }
 
             "addFile" => {

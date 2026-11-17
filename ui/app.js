@@ -123,9 +123,11 @@ function renderFiles() {
     section(all.filter((e) => e.f.repo === r.root).map((e) => ({ ...e, path: e.f.rel || e.f.name }))));
   $("#files").innerHTML = section(loose) + repos.join("") +
     (S.files.length ? "" : `<div class="muted small" style="padding:6px 8px">No env files in this folder.</div>`) +
-    `<button class="file addfile" id="addFile">${ic("plus")}<span>Open file</span></button>` +
+    `<button class="file addfile" id="newFile">${ic("plus")}<span>New file</span></button>` +
+    `<button class="file addfile" id="addFile">${ic("file")}<span>Open file</span></button>` +
     (S.sops.path ? `<div class="sopsinfo" title="${esc(S.sops.path)}">sops ${esc(S.sops.version)} · ${S.sops.source}</div>` : "");
   $("#files").querySelectorAll("[data-i]").forEach((b) => (b.onclick = () => openFile(S.files[b.dataset.i])));
+  $("#newFile").onclick = newFileDialog;
   $("#addFile").onclick = async () => {
     const p = await pick("file", "Open env file", S.folder);
     if (!p) return;
@@ -152,7 +154,9 @@ function renderEditor() {
   const el = $("#editor");
   if (!cur) {
     el.innerHTML = `<div class="empty">${ic("lock")}<h2>Open an env file</h2>
-      <p>Pick a file on the left to view and edit its values. Encrypted files are decrypted in memory only.</p></div>`;
+      <p>Pick a file on the left to view and edit its values. Encrypted files are decrypted in memory only.</p>
+      <p><button class="btn" id="emptyNew">${ic("plus")}New encrypted file</button></p></div>`;
+    $("#emptyNew").onclick = newFileDialog;
     return;
   }
   const m = meta() || cur.blocked;
@@ -198,8 +202,8 @@ function renderEditor() {
   // Comparing with the last commit needs a repository and git itself.
   const canCompare = m && m.repo && S.git && (m.git === "modified" || m.git === "new");
   el.innerHTML = `${note}
-    <div class="filehead"><span class="name mono">${esc(m ? m.name : cur.path)}</span>
-      <span class="muted small">${cur.encrypted ? `${cur.recipients.length} recipient${cur.recipients.length === 1 ? "" : "s"}` : "Not encrypted yet"}</span>
+    <div class="filehead"><span class="name mono">${esc(m ? m.name : cur.isNew ? cur.newName : cur.path)}</span>
+      <span class="muted small">${cur.isNew ? "New file, saved encrypted" : cur.encrypted ? `${cur.recipients.length} recipient${cur.recipients.length === 1 ? "" : "s"}` : "Not encrypted yet"}</span>
       ${cur.encoding ? `<span class="pill" title="Encrypting saves the file as UTF-8, which is what sops writes.">${esc(cur.encoding)}</span>` : ""}
       ${canCompare ? `<button class="btn sm" id="changesBtn" title="Compare with the last commit">${ic("branch")}Changes</button>` : ""}</div>
     <div class="table">${rows}<button class="addrow" id="addVar">${ic("plus")}Add variable</button></div>
@@ -252,6 +256,14 @@ let saving = false;
 async function doSave(recipients, overwrite = false) {
   saving = true;
   try {
+    if (cur.isNew) {
+      // Created encrypted in one step; the plaintext never reaches the disk.
+      const d = await api("create", { dir: cur.newDir, name: cur.newName, items: cur.items, recipients });
+      cur = { path: d.path, ...d.file, orig: JSON.stringify(d.file.items) };
+      setState(d.state); renderEditor();
+      toast("Created and encrypted");
+      return;
+    }
     const d = await api("save", { path: cur.path, items: cur.items, recipients, rev: cur.rev, overwrite });
     if (d.conflict) return conflictDialog(recipients);
     cur = { path: cur.path, ...d.file, orig: JSON.stringify(d.file.items) };
@@ -259,6 +271,49 @@ async function doSave(recipients, overwrite = false) {
     toast("Encrypted and saved");
   } catch (e) { fail(e); }
   finally { saving = false; }
+}
+
+// A new encrypted env file: pick a folder and a name, then fill in the
+// variables in the editor. Saving creates the file, already encrypted.
+async function newFileDialog() {
+  if (isDirty() && !(await ask("Discard unsaved changes?", "Discard"))) return;
+  const sep = S.folder.includes("\\") ? "\\" : "/";
+  const dirOf = (p) => p.slice(0, Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\")));
+  // Likely homes: the open folder, each repository, and folders that already hold env files.
+  const dirs = [...new Set([S.folder, ...(S.repos || []).map((r) => r.root), ...S.files.map((f) => dirOf(f.path))])];
+  const label = (d) => (d === S.folder ? `${d.split(/[\\/]/).pop() || d} (open folder)` : d.startsWith(S.folder + sep) ? d.slice(S.folder.length + 1) : d);
+  const dlg = $("#dlg");
+  show(dlg, "New encrypted file", `
+    <div class="formrow" style="align-items:center"><label for="nfDir" style="width:70px">Folder</label>
+      <select id="nfDir" style="flex:1">${dirs.map((d) => `<option value="${esc(d)}">${esc(label(d))}</option>`).join("")}
+        <option value="">Choose another folder…</option></select></div>
+    <div class="formrow" style="align-items:center"><label for="nfName" style="width:70px">Name</label>
+      <input type="text" id="nfName" class="mono" placeholder=".env.production" spellcheck="false"></div>
+    <div class="err" id="nfErr"></div>
+    <p class="muted small">The file is created encrypted when you save it; its content never touches the disk in plaintext.</p>
+    <div class="formrow" style="justify-content:flex-end"><button class="btn primary" id="nfGo">Continue</button></div>`);
+  const sel = $("#nfDir", dlg), name = $("#nfName", dlg), err = $("#nfErr", dlg);
+  sel.onchange = async () => {
+    if (sel.value) return;
+    const p = await pick("folder", "Choose a folder for the new file", S.folder);
+    if (!p) { sel.selectedIndex = 0; return; }
+    sel.insertBefore(Object.assign(document.createElement("option"), { value: p, textContent: p }), sel.lastElementChild);
+    sel.value = p;
+  };
+  name.oninput = () => (err.textContent = "");
+  name.onkeydown = (e) => { if (e.key === "Enter") $("#nfGo", dlg).click(); };
+  name.focus();
+  $("#nfGo", dlg).onclick = async () => {
+    try {
+      const d = await api("checkNewFile", { dir: sel.value, name: name.value });
+      dlg.close();
+      cur = { path: d.path, isNew: true, newDir: sel.value, newName: name.value.trim(), encrypted: false, hasRule: d.hasRule,
+        items: [{ t: "kv", k: "", v: "" }], orig: "[]", recipients: [] };
+      shown.clear(); shown.add(0);
+      renderFiles(); renderEditor();
+      $("#editor .k").focus();
+    } catch (e) { err.textContent = e.message; }
+  };
 }
 
 // The file changed on disk after it was opened here, for example through a
@@ -444,7 +499,7 @@ async function refresh(manual = false) {
           await openFile(f);
           toast("Reloaded: the file changed on disk");
         }
-      } else if (cur && !m && !cur.blocked && !cur.gone) {
+      } else if (cur && !m && !cur.blocked && !cur.gone && !cur.isNew) {
         cur.gone = true;
         renderEditor();
       }

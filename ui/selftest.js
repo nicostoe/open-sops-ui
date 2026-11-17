@@ -214,6 +214,29 @@
     await shot("13-recent-folders");
     await click("#dlg [data-close]");
 
+    // A new encrypted file, created from the sidebar.
+    await click("#newFile");
+    await until("the new-file dialog", () => q("#dlg[open] #nfName"));
+    await type("#nfName", "notes.txt");
+    await click("#nfGo");
+    await shows("#nfErr", "with env in it");
+    check(q("#dlg").open, "a name the app wouldn't list is refused with a hint");
+    await type("#nfName", ".env.ci");
+    await shot("14-new-file");
+    await click("#nfGo");
+    await until("the empty editor", () => !q("#dlg").open && q("#editor .row"));
+    check(text(".filehead").includes(".env.ci") && text(".filehead").includes("New file"), "the editor opens for the new file");
+    await type("#editor .row .k", "CI_TOKEN");
+    await type("#editor .row .val", "abc123");
+    await click("#save");
+    await until("the recipient chooser", () => q("#dlg[open] #go"));
+    await click("#dlg #go");
+    await shows(".filehead", "1 recipient");
+    check(fileBtn(".env.ci")?.classList.contains("s-ok"), "the new file is listed, encrypted and readable");
+    fileBtn(".env.production").click();
+    await until("the production file again", () => cur && cur.path.endsWith(".env.production") && q("#editor .row"));
+    q("#toast").className = "";
+
     await click("#settingsBtn");
     await until("the settings", () => q("#dlg[open] #clipSel"));
     const sel = q("#clipSel");
@@ -223,7 +246,7 @@
     check(true, "the clipboard time can be changed in the settings");
     q("#toast").className = "";
     check(!q("#themeBtn"), "the theme switch lives in the settings, not the header");
-    await shot("14-settings");
+    await shot("15-settings");
     const themeSel = q("#themeSel");
     themeSel.value = "dark";
     themeSel.dispatchEvent(new Event("change", { bubbles: true }));
@@ -233,14 +256,14 @@
     await until("the settings", () => q("#dlg[open] #themeSel"));
     check(q("#themeSel").value === "dark", "the settings show the chosen theme when opened again");
     await click("#dlg [data-close]");
-    await shot("15-dark");
+    await shot("16-dark");
     await click("#keysBtn");
     await until("the key in the dialog", () => q("#dlg [data-copy]"));
-    await shot("16-dark-keys");
+    await shot("17-dark-keys");
     await click("#dlg [data-close]");
     await click("#changesBtn");
     await until("the changes", () => q("#dlg[open] .chg"));
-    await shot("17-dark-changes");
+    await shot("18-dark-changes");
     await click("#dlg [data-close]");
 
     await call("done", { ok: true, log });
