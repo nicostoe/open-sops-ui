@@ -9,6 +9,9 @@ on:
 permissions:
   contents: read
 
+env:
+  GIT_CLIFF_VERSION: 2.14.2 # renovate: datasource=crate depName=git-cliff
+
 jobs:
   version:
     name: Check the version
@@ -39,6 +42,22 @@ jobs:
     permissions:
       contents: write
     steps:
+      # The full history and all tags, to find the previous release.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: git-cliff@${{ env.GIT_CLIFF_VERSION }}
+
+      # What changed since the previous release, grouped into features, bug
+      # fixes, security and dependencies (cliff.toml).
+      - name: Write the release notes
+        env:
+          TAG: ${{ github.ref_name }}
+        run: scripts/release-notes.sh "$TAG" > "$RUNNER_TEMP/notes.md" && cat "$RUNNER_TEMP/notes.md"
+
       - uses: actions/download-artifact@v4
         with:
           pattern: packages-*
@@ -58,4 +77,4 @@ jobs:
           flags=()
           # A suffix after the version (v1.2.3-beta.1) marks a pre-release.
           if [[ "$TAG" == *-* ]]; then flags+=(--prerelease); fi
-          gh release create "$TAG" dist/* --verify-tag --title "$TAG" --generate-notes "${flags[@]}"
+          gh release create "$TAG" dist/* --verify-tag --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md" "${flags[@]}"

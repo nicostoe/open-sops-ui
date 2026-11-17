@@ -100,6 +100,12 @@ git tag v0.1.0-beta.1 && git push origin v0.1.0-beta.1
 
 A tag with a suffix after the version (`-beta.1`, `-rc.1`) is published as a pre-release; a plain `v0.1.0` as a normal release.
 
+Each release lists what changed since the previous one: features, bug fixes, security fixes and dependency updates, generated from the commit messages. A pre-release covers the changes since the tag before it; a release covers everything since the last release, betas included. To see what the next release would contain:
+
+```bash
+scripts/release-notes.sh
+```
+
 The release runs the full build workflow first, so nothing is published unless every test passes. The tag has to match `version` in `src-tauri/tauri.conf.json`, because the package file names come from there; for a new version, change that one line, commit, then tag.
 
 The bundled `sops` version is pinned in `scripts/fetch-sops.sh`. The script verifies the release's checksums file with cosign and then the binary's SHA-256. [Renovate](https://docs.renovatebot.com) opens a pull request when a new `sops` release appears (`renovate.json`); the Renovate GitHub App has to be installed on the repository for that. `sops` is licensed under the MPL 2.0, and its licence text ships next to the binary.

@@ -1,0 +1,46 @@
+# Release notes for GitHub releases, generated from commit messages by
+# git-cliff (https://git-cliff.org). Preview with scripts/release-notes.sh.
+#
+# Commit subjects follow Conventional Commits; see "Commit messages" in
+# AGENTS.md. The type decides the section; types for internal work are left
+# out, so the notes show what changes for people using the app.
+
+[changelog]
+# The release title already names the version, so the body starts with the sections.
+header = ""
+body = """
+{%- if commits | length == 0 %}
+No changes to the app in this release.
+{% endif -%}
+{%- for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim }}
+{% for commit in commits %}
+- {% if commit.breaking %}**Breaking:** {% endif %}{{ commit.message | split(pat="\n") | first | trim | upper_first }} \
+([{{ commit.id | truncate(length=7, end="") }}](https://github.com/nicostoe/open-sops-ui/commit/{{ commit.id }}))
+{%- endfor %}
+{% endfor -%}
+"""
+footer = ""
+trim = true
+
+[git]
+conventional_commits = true
+# Commits that don't follow the convention still appear, under "Other changes".
+filter_unconventional = false
+split_commits = false
+protect_breaking_commits = true
+filter_commits = false
+topo_order = false
+sort_commits = "oldest"
+commit_parsers = [
+  { message = "^Merge ", skip = true },
+  # The HTML comments only fix the order of the sections.
+  { message = "^[a-z]+\\(deps\\)", group = "<!-- 4 -->Dependencies" },
+  { message = "^[a-z]+\\(security\\)", group = "<!-- 2 -->Security" },
+  { message = "^feat", group = "<!-- 0 -->Features" },
+  { message = "^fix", group = "<!-- 1 -->Bug fixes" },
+  { message = "^perf", group = "<!-- 3 -->Performance" },
+  { message = "^revert", group = "<!-- 5 -->Reverted" },
+  { message = "^(docs|test|ci|build|chore|refactor|style)", skip = true },
+  { message = ".*", group = "<!-- 6 -->Other changes" },
+]

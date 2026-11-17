@@ -3,6 +3,7 @@
   "extends": [
     "config:recommended"
   ],
+  "semanticCommits": "enabled",
   "timezone": "Europe/Berlin",
   "schedule": [
     "before 6am on monday"
@@ -24,6 +25,16 @@
       ],
       "matchStrings": [
         "SOPS_VERSION=\"(?<currentValue>[^\"]+)\" # renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)"
+      ]
+    },
+    {
+      "customType": "regex",
+      "description": "Tool versions pinned in workflows, such as git-cliff",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/.+\\.yml$/"
+      ],
+      "matchStrings": [
+        "[A-Z_]+_VERSION: (?<currentValue>\\S+) # renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)"
       ]
     }
   ],

@@ -17,6 +17,7 @@ A Tauri 2 desktop app for SOPS-encrypted env files. See [README.md](README.md) f
 - `scripts/fetch-sops.sh`: downloads the pinned sops into `vendor/sops/` (git-ignored) and verifies it with cosign and SHA-256. The `SOPS_VERSION` line carries a Renovate comment; keep its format, `renovate.json` matches it with a regex.
 - `scripts/smoke-test.sh`: installs the built package and runs `open-sops-ui --self-check` (CI only; it installs the app).
 - `scripts/ui-test.sh`, `scripts/distro-test.sh`: run the UI test, on a runner or inside a distribution container.
+- `cliff.toml`, `scripts/release-notes.sh`: release notes from commit messages. The release workflow attaches them to each release; every CI run on Linux shows the preview for the next one on its summary page.
 - `scripts/collect-bundles.sh`, `scripts/ci-annotate.sh`: CI helpers for package names and public failure annotations.
 - `app-icon.svg`: icon source. Regenerate with `npx tauri icon app-icon.svg`, then delete `src-tauri/icons/android` and `ios`.
 
@@ -48,6 +49,21 @@ npm run build
 - **Git safety:** every git call goes through `git_read`, which switches off the programs a repository's own config can make git run (`core.fsmonitor`, hooks). Opening a folder must never execute anything from it; `untrusted_repository_config_is_not_executed` guards this. Never call `run(git, …)` directly.
 - **Git:** optional everywhere. Repository and branch come from the file system (`repo_root`, `repo_branch` read `.git`), so grouping works without the `git` binary. Status needs `git` and costs two calls per repository (`git_states`), never one per file. `changes` decrypts `git show HEAD:<file>` and compares by variable. The app reads from Git and may append to `.gitignore`; it never commits, pushes, or writes decrypted values to disk.
 - **Format:** always pass `--input-type dotenv --output-type dotenv`; names like `.env.prod.enc` aren't detected by extension.
+
+## Commit messages
+
+Release notes are generated from commit subjects (`cliff.toml`), so every commit uses [Conventional Commits](https://www.conventionalcommits.org): `type(scope): description`, imperative, lower case after the colon. The type decides where it shows up:
+
+| Type | Section in the release notes |
+| --- | --- |
+| `feat` | Features |
+| `fix` | Bug fixes |
+| `fix(security)`, `feat(security)` | Security |
+| `perf` | Performance |
+| `…(deps)` | Dependencies (Renovate writes these) |
+| `docs`, `test`, `ci`, `build`, `chore`, `refactor`, `style` | left out |
+
+Write the description for someone using the app ("fix: keep the scroll position after saving"), not about the code. Mark a breaking change with `!` (`feat!: …`). A commit that doesn't follow the format still appears, under "Other changes". Preview the notes with `scripts/release-notes.sh` (needs `cargo install git-cliff --locked`).
 
 ## Rules
 
