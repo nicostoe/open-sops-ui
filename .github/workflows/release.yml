@@ -58,7 +58,7 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: scripts/release-notes.sh "$TAG" > "$RUNNER_TEMP/notes.md" && cat "$RUNNER_TEMP/notes.md"
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: packages-*
           merge-multiple: true
