@@ -16,6 +16,7 @@ const ICONS = {
   folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
   file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
   x: '<path d="M6 6l12 12M18 6L6 18"/>',
+  refresh: '<path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/>',
   gear: '<path d="M4 7h9M19 7h1M4 17h1M11 17h9"/><circle cx="16" cy="7" r="2.5"/><circle cx="8" cy="17" r="2.5"/>',
   branch: '<circle cx="6" cy="5" r="2.5"/><circle cx="6" cy="19" r="2.5"/><circle cx="18" cy="8" r="2.5"/><path d="M6 7.5v9M18 10.5c0 5-12 2-12 6"/>',
   up: '<path d="M12 19V5M6 11l6-6 6 6"/>',
@@ -57,15 +58,11 @@ function theme() { try { return localStorage.getItem("theme") || "system"; } cat
 function applyTheme() {
   const t = theme();
   document.documentElement.dataset.theme = t === "system" ? (media.matches ? "dark" : "light") : t;
-  const b = $("#themeBtn");
-  b.innerHTML = ic({ system: "monitor", light: "sun", dark: "moon" }[t]);
-  b.title = b.ariaLabel = `Theme: ${t}`;
 }
-$("#themeBtn").onclick = () => {
-  const next = { system: "light", light: "dark", dark: "system" }[theme()];
-  try { localStorage.setItem("theme", next); } catch { /* not persisted */ }
+function setTheme(name) {
+  try { localStorage.setItem("theme", name); } catch { /* applies until the app closes */ }
   applyTheme();
-};
+}
 media.addEventListener("change", applyTheme);
 applyTheme();
 
@@ -186,7 +183,11 @@ function renderEditor() {
       </span></div>`;
   }).join("");
   let note = "";
-  if (!cur.encrypted && m && m.status === "plain-tracked") {
+  if (cur.gone) {
+    note = `<div class="note warn">${ic("alert")}<span>This file is no longer on disk, for example after switching branches. Saving creates it again.</span></div>`;
+  } else if (cur.stale) {
+    note = `<div class="note warn">${ic("alert")}<span>This file changed on disk while you were editing. Your edits are kept; saving asks whether to overwrite the other version.</span></div>`;
+  } else if (!cur.encrypted && m && m.status === "plain-tracked") {
     note = `<div class="note bad">${ic("alert")}<span>This file is plaintext and committed to Git. Encrypting it protects future commits, but the values stay readable in the history, so change those secrets.</span></div>`;
   } else if (!cur.encrypted && m && m.status === "plain-risk") {
     note = `<div class="note warn">${ic("alert")}<span>This file is plaintext and Git isn't ignoring it. Encrypt it before committing, or keep it out of Git.</span>` +
@@ -228,7 +229,11 @@ function renderEditor() {
     const ks = el.querySelectorAll(".k"); ks[ks.length - 1].focus();
   };
   $("#save").onclick = save;
-  $("#revert").onclick = () => { cur.items = JSON.parse(cur.orig); shown.clear(); renderEditor(); };
+  $("#revert").onclick = async () => {
+    // After an outside change, discarding means taking the version on disk.
+    if (cur.stale && meta()) { const f = meta(); cur = null; return openFile(f); }
+    cur.items = JSON.parse(cur.orig); shown.clear(); renderEditor();
+  };
   if ($("#fixDrift")) $("#fixDrift").onclick = recipientsDialog;
   mark();
 }
@@ -243,7 +248,9 @@ async function save() {
   if (!cur.encrypted && !cur.hasRule) return chooseRecipients();
   await doSave();
 }
+let saving = false;
 async function doSave(recipients, overwrite = false) {
+  saving = true;
   try {
     const d = await api("save", { path: cur.path, items: cur.items, recipients, rev: cur.rev, overwrite });
     if (d.conflict) return conflictDialog(recipients);
@@ -251,6 +258,7 @@ async function doSave(recipients, overwrite = false) {
     setState(d.state); renderEditor();
     toast("Encrypted and saved");
   } catch (e) { fail(e); }
+  finally { saving = false; }
 }
 
 // The file changed on disk after it was opened here, for example through a
@@ -277,11 +285,17 @@ function settingsDialog() {
   const dlg = $("#dlg"), now = S.settings.clipboardClearSeconds;
   const choices = [15, 30, 60, 120, 300, 0];
   if (!choices.includes(now)) choices.unshift(now);
+  const t = theme();
+  const themes = { system: "Same as the system", light: "Light", dark: "Dark" };
   show(dlg, "Settings", `
+    <h3>Appearance</h3>
+    <div class="formrow" style="align-items:center"><label for="themeSel" style="flex:1">Theme</label>
+      <select id="themeSel">${Object.entries(themes).map(([v, l]) => `<option value="${v}" ${v === t ? "selected" : ""}>${l}</option>`).join("")}</select></div>
     <h3>Clipboard</h3>
     <div class="formrow" style="align-items:center"><label for="clipSel" style="flex:1">Clear copied values after</label>
       <select id="clipSel">${choices.map((s) => `<option value="${s}" ${s === now ? "selected" : ""}>${s ? duration(s) : "Never"}</option>`).join("")}</select></div>
     <p class="muted small">Applies to variable values, not to public keys. Clipboard history tools may keep their own copy.</p>`);
+  $("#themeSel", dlg).onchange = (e) => setTheme(e.target.value);
   $("#clipSel", dlg).onchange = async (e) => {
     try { setState(await api("setSettings", { clipboardClearSeconds: +e.target.value })); toast("Setting saved"); } catch (err) { fail(err); }
   };
@@ -404,6 +418,49 @@ function keysDialog() {
 }
 
 // After keys or recipients change, the open file may have become (un)readable.
+// Reads the folder again: new, removed and changed files appear, Git status
+// is current. Runs on the refresh button and whenever the window gets focus
+// back, for example after a git pull in a terminal. The open file reloads
+// itself if it changed on disk and has no unsaved edits; with unsaved edits
+// it keeps them, says so, and saving asks before overwriting.
+let refreshing = null;
+async function refresh(manual = false) {
+  if (refreshing) return refreshing;
+  // Don't pull the rug from under an open dialog or a save in progress.
+  if (!manual && (document.querySelector("dialog[open]") || saving)) return;
+  const btn = $("#refreshBtn");
+  btn.classList.add("spin");
+  refreshing = (async () => {
+    try {
+      setState(await api("state"));
+      const m = meta();
+      if (cur && !cur.blocked && m && m.rev && m.rev !== cur.rev) {
+        if (isDirty()) {
+          cur.stale = true;
+          renderEditor();
+        } else {
+          const f = m;
+          cur = null;
+          await openFile(f);
+          toast("Reloaded: the file changed on disk");
+        }
+      } else if (cur && !m && !cur.blocked && !cur.gone) {
+        cur.gone = true;
+        renderEditor();
+      }
+      if (manual) toast("Up to date");
+    } catch (e) { fail(e); }
+    finally { btn.classList.remove("spin"); refreshing = null; }
+  })();
+  return refreshing;
+}
+let lastFocusRefresh = 0;
+function refreshOnFocus() {
+  if (Date.now() - lastFocusRefresh < 2000) return;
+  lastFocusRefresh = Date.now();
+  refresh();
+}
+
 async function refreshAfter(s) {
   setState(s);
   if (cur && !isDirty()) { const f = meta(); cur = null; await openFile(f); }
@@ -506,6 +563,12 @@ try {
     if (isDirty() && !(await ask("Close and discard unsaved changes?", "Discard"))) event.preventDefault();
   });
 } catch { /* closing simply won't ask */ }
+
+$("#refreshBtn").innerHTML = ic("refresh");
+$("#refreshBtn").onclick = () => refresh(true);
+// Coming back to the window is when files most likely changed outside.
+window.addEventListener("focus", refreshOnFocus);
+try { T.window.getCurrentWindow().onFocusChanged(({ payload }) => { if (payload) refreshOnFocus(); }); } catch { /* the window event above covers it */ }
 
 api("state").then((s) => { setState(s); renderEditor(); }).catch(fail);
 

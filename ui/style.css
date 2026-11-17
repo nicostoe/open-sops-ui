@@ -88,6 +88,11 @@ aside { background: var(--side); border-right: 1px solid var(--line); padding: 1
 .pill.chg-added { background: var(--ok-bg); color: var(--ok); } .pill.chg-changed { background: var(--warn-bg); color: var(--warn); }
 .pill.chg-removed { background: var(--bad-bg); color: var(--bad); }
 .recent .file span { direction: rtl; text-align: left; }
+.sidehead { display: flex; align-items: center; justify-content: space-between; padding: 0 0 4px 8px; }
+.sidehead .btn.icon { width: 26px; height: 26px; }
+.spin svg { animation: spin .7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spin svg { animation: none; } }
 .addfile { color: var(--text2); margin-top: 4px; }
 .sopsinfo { color: var(--muted); font-size: 12px; padding: 14px 8px 2px; }
 

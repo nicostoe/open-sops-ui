@@ -289,6 +289,19 @@ fn robustness_flow(app: &mut App, root: &std::path::Path, key: &str) {
         .unwrap();
     assert_eq!(status(&state, "utf16.env"), "plain");
     assert_eq!(status(&state, "binary.env"), "unreadable");
+    let rev_of = |state: &Value, name: &str| -> Value {
+        state["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["name"] == name)
+            .unwrap()["rev"]
+            .clone()
+    };
+    assert!(
+        rev_of(&state, "binary.env").is_null(),
+        "an unreadable file has no fingerprint"
+    );
 
     let p = dir.join("utf16.env").to_string_lossy().to_string();
     let opened = app.handle("open", &json!({ "path": p })).unwrap();
@@ -311,12 +324,20 @@ fn robustness_flow(app: &mut App, root: &std::path::Path, key: &str) {
 
     // Someone else changes the file after it was opened here.
     let mine = saved["file"]["rev"].clone();
+    // The file list carries the same fingerprint as the opened file.
+    assert_eq!(rev_of(&saved["state"], "utf16.env"), mine);
     let theirs = json!([{ "t": "kv", "k": "A", "v": "theirs" }, { "t": "kv", "k": "NAME", "v": "Zo\u{eb}" }, { "t": "kv", "k": "EXTRA", "v": "x" }]);
     app.handle("save", &json!({ "path": p, "items": theirs }))
         .unwrap();
     let on_disk = std::fs::read(&p).unwrap();
     let ours =
         json!([{ "t": "kv", "k": "A", "v": "ours" }, { "t": "kv", "k": "NAME", "v": "Zo\u{eb}" }]);
+    let listed = app.handle("state", &json!({})).unwrap();
+    assert_ne!(
+        rev_of(&listed, "utf16.env"),
+        mine,
+        "a change on disk changes the listed fingerprint"
+    );
     let refused = app
         .handle("save", &json!({ "path": p, "items": ours, "rev": mine }))
         .unwrap();

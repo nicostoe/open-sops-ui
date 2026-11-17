@@ -1236,9 +1236,13 @@ impl App {
             .strip_prefix(&self.folder)
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|_| path.to_string());
+        let read = read_text(file);
         let mut info = json!({
             "path": path,
             "name": name,
+            // Fingerprint of the bytes on disk; the UI compares it with the open
+            // file's to notice changes made outside the app, such as a git pull.
+            "rev": read.as_ref().ok().map(|f| f.rev.clone()),
             "repo": root.map(|r| r.to_string_lossy().into_owned()),
             // Path inside the repository; the file list groups by it.
             "rel": root.and_then(|r| file.strip_prefix(r).ok()).map(|p| p.to_string_lossy().into_owned()),
@@ -1248,7 +1252,7 @@ impl App {
             info["status"] = json!(status);
             info["note"] = json!(note);
         };
-        let text = match read_text(file) {
+        let text = match read {
             Ok(file) => file.text,
             Err(ReadProblem::Missing) => {
                 set("missing", "File not found");

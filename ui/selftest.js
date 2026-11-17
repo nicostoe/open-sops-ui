@@ -48,10 +48,6 @@
     if (!condition) throw new Error(`check failed: ${message}`);
     log.push(`ok ${message}`);
   }
-  function setTheme(name) {
-    localStorage.setItem("theme", name);
-    applyTheme();
-  }
 
   try {
     setTheme("light");
@@ -155,6 +151,46 @@
     await shows("#dirty", "Saved");
     check(!q("#dlg2").open, "after reloading, saving needs no confirmation");
 
+    // Files change outside the app, as after a git pull. The refresh button and
+    // getting the window's focus back both show them.
+    const dirOf = (p) => p.slice(0, Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\")) + 1);
+    const project = dirOf(cur.path);
+    await call("writeFile", { path: project + ".env.preview", text: "PREVIEW_URL=https://preview.example\n" });
+    check(!fileBtn(".env.preview"), "a file added outside the app isn't listed yet");
+    await click("#refreshBtn");
+    await until("the new file", () => fileBtn(".env.preview"));
+    check(true, "the refresh button lists a file added outside the app");
+    await call("writeFile", { path: project + ".env.qa", text: "QA=1\n" });
+    await sleep(2100); // focus refreshes are at most every two seconds
+    window.dispatchEvent(new Event("focus"));
+    await until("the file found on focus", () => fileBtn(".env.qa"));
+    check(true, "getting the window's focus back lists new files");
+
+    // The open file changes on disk without local edits: it reloads by itself.
+    const pulled = JSON.parse(cur.orig).map((i) => (i.k === "SMTP_PASSWORD" ? { ...i, v: "pulled-value" } : i));
+    await api("save", { path: cur.path, items: pulled });
+    await sleep(2100);
+    window.dispatchEvent(new Event("focus"));
+    await until("the reloaded value", () => cur && cur.items.find((i) => i.k === "SMTP_PASSWORD")?.v === "pulled-value");
+    check(!q("#dlg2").open && !text("#dirty").includes("Unsaved"), "an open file without edits reloads when it changed on disk");
+
+    // With local edits, they are kept and a note says the file changed.
+    await type("#editor .row:nth-of-type(1) .val", "local-edit");
+    const pulledAgain = JSON.parse(cur.orig).map((i) => (i.k === "SMTP_PASSWORD" ? { ...i, v: "pulled-again" } : i));
+    await api("save", { path: cur.path, items: pulledAgain });
+    await click("#refreshBtn");
+    await shows(".note", "changed on disk while you were editing");
+    check(text("#dirty").includes("Unsaved") && cur.items.some((i) => i.v === "local-edit"), "local edits survive a refresh");
+    await shot("11-changed-while-editing");
+    await click("#revert");
+    await until("the version on disk", () => cur && !cur.stale && cur.items.find((i) => i.k === "SMTP_PASSWORD")?.v === "pulled-again");
+    check(!cur.items.some((i) => i.v === "local-edit"), "discarding after an outside change takes the version on disk");
+    // Put the value the file checks expect back.
+    await type("#editor .row:nth-of-type(4) .val", "mail-pass-1234");
+    await click("#save");
+    await shows("#dirty", "Saved");
+    q("#toast").className = "";
+
     // Copying a value: it reaches the clipboard and is removed again.
     setState(await api("setSettings", { clipboardClearSeconds: 2 }));
     await click("#editor .row:nth-of-type(2) [data-a=copy]");
@@ -167,7 +203,7 @@
     await type("#editor .row:nth-of-type(1) .val", "unsaved");
     await click("#folderBtn");
     await shows("#dlg2", "Discard unsaved changes?");
-    await shot("11-confirm");
+    await shot("12-confirm");
     await click("#dlg2 #no");
     await click("#revert");
     check(!text("#dirty").includes("Unsaved"), "discarding restores the saved values");
@@ -175,7 +211,7 @@
     await click("#folderBtn");
     await shows("#dlg", "blog");
     check(document.querySelectorAll("#dlg [data-r]").length === 1, "the other recently opened folder is offered");
-    await shot("12-recent-folders");
+    await shot("13-recent-folders");
     await click("#dlg [data-close]");
 
     await click("#settingsBtn");
@@ -186,19 +222,25 @@
     await until("the saved setting", () => S.settings.clipboardClearSeconds === 60);
     check(true, "the clipboard time can be changed in the settings");
     q("#toast").className = "";
-    await shot("13-settings");
+    check(!q("#themeBtn"), "the theme switch lives in the settings, not the header");
+    await shot("14-settings");
+    const themeSel = q("#themeSel");
+    themeSel.value = "dark";
+    themeSel.dispatchEvent(new Event("change", { bubbles: true }));
+    check(document.documentElement.dataset.theme === "dark", "choosing dark in the settings applies dark mode");
     await click("#dlg [data-close]");
-
-    setTheme("dark");
-    check(document.documentElement.dataset.theme === "dark", "dark mode is applied");
-    await shot("14-dark");
+    await click("#settingsBtn");
+    await until("the settings", () => q("#dlg[open] #themeSel"));
+    check(q("#themeSel").value === "dark", "the settings show the chosen theme when opened again");
+    await click("#dlg [data-close]");
+    await shot("15-dark");
     await click("#keysBtn");
     await until("the key in the dialog", () => q("#dlg [data-copy]"));
-    await shot("15-dark-keys");
+    await shot("16-dark-keys");
     await click("#dlg [data-close]");
     await click("#changesBtn");
     await until("the changes", () => q("#dlg[open] .chg"));
-    await shot("16-dark-changes");
+    await shot("17-dark-changes");
     await click("#dlg [data-close]");
 
     await call("done", { ok: true, log });

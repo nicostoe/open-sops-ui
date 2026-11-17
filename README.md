@@ -16,6 +16,7 @@ Decrypted values are held in memory only. The app makes no network requests.
 - Warns about plaintext secrets that Git would commit or already has, and can add a file to `.gitignore`.
 - Edits values in a table and saves each change through `sops` on its own, so unchanged values stay byte-identical in Git and nothing decrypted is written to disk, not even to a temp file.
 - Removes a copied value from the clipboard again after a time you choose in the settings (one minute by default).
+- Picks up changes made outside the app, such as a Git pull: the file list refreshes when you switch back to the window or press the refresh button, and an open file reloads unless you have unsaved edits.
 - Asks before overwriting a file that changed on disk after you opened it, for example through a Git pull.
 - Reads plaintext files in UTF-8, UTF-16 and Windows-1252; encrypted files are always written as UTF-8.
 - Loads age keys from the default location, from any number of custom key files, or pasted for the session only. A pasted or newly created key can be saved to the default location.

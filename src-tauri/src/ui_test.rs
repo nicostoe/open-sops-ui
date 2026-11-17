@@ -113,6 +113,15 @@ pub fn ui_test(app: tauri::AppHandle, action: String, body: Value) -> Result<Val
             use tauri_plugin_clipboard_manager::ClipboardExt;
             Ok(json!(app.clipboard().read_text().unwrap_or_default()))
         }
+        // Changes a file behind the app's back, like a git pull would.
+        "writeFile" => {
+            let path = body["path"].as_str().unwrap_or("");
+            Ok(json!(std::fs::write(
+                path,
+                body["text"].as_str().unwrap_or("")
+            )
+            .is_ok()))
+        }
         "commit" => Ok(json!(commit(Path::new(
             body["path"].as_str().unwrap_or("")
         )))),

@@ -14,11 +14,14 @@
   <button class="btn ghost" id="keysBtn"><span data-ic="key"></span>Keys<span id="keysDot"></span></button>
   <button class="btn ghost" id="recBtn"><span data-ic="users"></span>Recipients</button>
   <button class="btn icon" id="settingsBtn" title="Settings" aria-label="Settings"></button>
-  <button class="btn icon" id="themeBtn"></button>
 </header>
 <div id="banner"></div>
 <main>
-  <aside id="files"></aside>
+  <aside>
+    <div class="sidehead"><span class="muted small">Files</span>
+      <button class="btn icon" id="refreshBtn" title="Refresh: look for new and changed files" aria-label="Refresh"></button></div>
+    <div id="files"></div>
+  </aside>
   <section id="editor"></section>
 </main>
 <dialog id="dlg"></dialog>
