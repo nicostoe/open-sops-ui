@@ -149,10 +149,10 @@ fn decode_text(bytes: &[u8]) -> Option<(String, &'static str)> {
         (decode_utf16(rest, false)?, "UTF-16")
     } else if let Ok(text) = std::str::from_utf8(bytes) {
         (text.to_string(), "UTF-8")
-    } else if bytes.len() % 2 == 0 && zeros_at(1) * 4 > bytes.len() {
+    } else if bytes.len().is_multiple_of(2) && zeros_at(1) * 4 > bytes.len() {
         // No byte order mark, but every other byte is zero: UTF-16 of mostly ASCII text.
         (decode_utf16(bytes, true)?, "UTF-16")
-    } else if bytes.len() % 2 == 0 && zeros_at(0) * 4 > bytes.len() {
+    } else if bytes.len().is_multiple_of(2) && zeros_at(0) * 4 > bytes.len() {
         (decode_utf16(bytes, false)?, "UTF-16")
     } else {
         let text = bytes
@@ -530,8 +530,7 @@ fn sops_error(stderr: &str) -> String {
     stderr
         .lines()
         .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .last()
+        .rfind(|l| !l.is_empty())
         .unwrap_or("sops failed.")
         .to_string()
 }
