@@ -480,6 +480,53 @@ fn robustness_flow(app: &mut App, root: &std::path::Path, key: &str) {
     app.handle("setSettings", &json!({ "clipboardClearSeconds": 0 }))
         .unwrap();
     assert_eq!(app.clipboard_clear_seconds(), 0);
+
+    // Update checks: on by default, can be turned off on their own, and stay off.
+    assert_eq!(state["settings"]["checkUpdates"], true);
+    let state = app
+        .handle("setSettings", &json!({ "checkUpdates": false }))
+        .unwrap();
+    assert_eq!(state["settings"]["checkUpdates"], false);
+    assert_eq!(
+        state["settings"]["clipboardClearSeconds"], 0,
+        "changing one setting keeps the others"
+    );
+    let state = app
+        .handle("setSettings", &json!({ "clipboardClearSeconds": 30 }))
+        .unwrap();
+    assert_eq!(
+        state["settings"]["checkUpdates"], false,
+        "changing one setting keeps the others"
+    );
+    assert!(!App::new(Some(dir.clone()), vec![]).check_updates());
+    assert!(app
+        .handle("setSettings", &json!({ "checkUpdates": "yes" }))
+        .is_err());
+    app.handle("setSettings", &json!({ "checkUpdates": true }))
+        .unwrap();
+
+    // The version the app reports is the one the build sets, and updates are judged against it.
+    app.set_version("0.1.0-beta.4");
+    assert_eq!(
+        app.handle("state", &json!({})).unwrap()["version"],
+        "0.1.0-beta.4"
+    );
+    let feed = json!([
+        { "tag_name": "v0.1.0", "prerelease": false, "draft": false, "body": "" },
+        { "tag_name": "v0.1.0-beta.5", "prerelease": true, "draft": false, "body": "" },
+    ]);
+    let picked = app
+        .handle("pickUpdate", &json!({ "releases": feed }))
+        .unwrap();
+    assert_eq!(
+        (picked["current"].as_str(), picked["update"]["tag"].as_str()),
+        (Some("0.1.0-beta.4"), Some("v0.1.0"))
+    );
+    app.set_version("0.1.0");
+    assert!(app
+        .handle("pickUpdate", &json!({ "releases": feed }))
+        .unwrap()["update"]
+        .is_null());
 }
 
 /// Repositories, Git status, comparison with the last commit and .gitignore.

@@ -139,8 +139,37 @@ fn self_check(bundled: &[PathBuf], version: &str, out_file: Option<&String>) -> 
     });
 }
 
+/// Opens a release's page in the browser. The page never passes a URL, only a
+/// tag, so it can't send the browser anywhere but this project's releases.
+#[tauri::command]
+fn open_release_page(app: tauri::AppHandle, tag: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    if !open_sops_ui_core::valid_release_tag(&tag) {
+        return Err("That isn't a release.".into());
+    }
+    if ui_test::record_opened_release(&tag) {
+        return Ok(());
+    }
+    let url = format!("{RELEASES_URL}/tag/{tag}");
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|_| "Couldn't open the browser.".to_string())
+}
+
+const RELEASES_URL: &str = "https://github.com/nicostoe/open-sops-ui/releases";
+
+/// The version of this build: the release tag, compiled in by CI (see
+/// scripts/version.sh). Local builds fall back to the version in tauri.conf.json.
+fn build_version(context: &tauri::Context) -> String {
+    option_env!("OPEN_SOPS_UI_VERSION")
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| context.package_info().version.to_string())
+}
+
 fn main() {
     let context = tauri::generate_context!();
+    let version = build_version(&context);
     let exe = std::env::current_exe().expect("the app's own path is unknown");
     let resource_dir =
         tauri::utils::platform::resource_dir(context.package_info(), &tauri::Env::default()).ok();
@@ -148,11 +177,7 @@ fn main() {
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("--self-check") {
-        self_check(
-            &bundled,
-            &context.package_info().version.to_string(),
-            args.get(1),
-        );
+        self_check(&bundled, &version, args.get(1));
     }
     let folder = args
         .first()
@@ -162,12 +187,20 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(Clipboard::default())
         .setup(move |app| {
-            app.manage(Shared(Mutex::new(App::new(folder, bundled))));
+            let mut core = App::new(folder, bundled);
+            core.set_version(&version);
+            app.manage(Shared(Mutex::new(core)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![api, copy, ui_test::ui_test])
+        .invoke_handler(tauri::generate_handler![
+            api,
+            copy,
+            open_release_page,
+            ui_test::ui_test
+        ])
         .build(context)
         .expect("failed to start open-sops-ui")
         .run(|app, event| {

@@ -13,7 +13,7 @@
   async function until(what, probe, timeout = 20000) {
     const end = Date.now() + timeout;
     while (Date.now() < end) {
-      const value = probe();
+      const value = await probe(); // a probe may be async
       if (value) return value;
       await sleep(100);
     }
@@ -246,6 +246,9 @@
     check(true, "the clipboard time can be changed in the settings");
     q("#toast").className = "";
     check(!q("#themeBtn"), "the theme switch lives in the settings, not the header");
+    // Updates: the settings show this build's version and the switch.
+    check(text("#dlg").includes(`Version ${S.version}`), "the settings show the app's version");
+    check(q("#updChk").checked, "update checks are on by default");
     await shot("15-settings");
     const themeSel = q("#themeSel");
     themeSel.value = "dark";
@@ -255,15 +258,78 @@
     await click("#settingsBtn");
     await until("the settings", () => q("#dlg[open] #themeSel"));
     check(q("#themeSel").value === "dark", "the settings show the chosen theme when opened again");
+
+    // A release list with a newer stable release, a newer pre-release and a
+    // draft. Which one counts depends on this build: CI builds are pre-releases.
+    check(q("#updateBtn").hidden, "no notice while there is nothing newer");
+    const feed = [
+      { tag_name: "v9.9.9", prerelease: false, draft: true, body: "draft" },
+      { tag_name: "v9.0.0-beta.1", prerelease: true, draft: false, body: "### Features\n\n- Faster startup\n- <img src=x onerror=alert(1)>" },
+      { tag_name: "v1.2.0", prerelease: false, draft: false, body: "### Features\n\n- Faster startup ([abc1234](https://example.invalid))\n\n**Full changelog:** https://example.invalid" },
+    ];
+    await call("setReleases", { releases: feed });
+    const onPrerelease = S.version.includes("-");
+    const expected = onPrerelease ? "v9.0.0-beta.1" : "v1.2.0";
+    q("#updChk").click();
+    await until("update checks off", () => S.settings.checkUpdates === false);
+    check(q("#updateBtn").hidden, "turning update checks off hides the notice");
+    q("#updChk").click();
+    await until("update checks on", () => S.settings.checkUpdates === true);
+    await until("the update notice", () => !q("#updateBtn").hidden);
     await click("#dlg [data-close]");
-    await shot("16-dark");
+    check(q("#updateBtn").title.includes(expected.slice(1)),
+      onPrerelease ? "a pre-release build hears about the newest release, pre-releases included"
+        : "a stable build hears about the newest stable release, not the pre-release");
+    await click("#updateBtn");
+    await until("the update dialog", () => q("#dlg[open] #updOpen"));
+    check(text("#dlg").includes(`You have ${S.version}`) && text("#dlg").includes("Faster startup"), "the dialog shows both versions and the release notes");
+    check(!q("#dlg .notes img"), "release notes are shown as text, not as HTML");
+    q("#toast").className = "";
+    await shot("16-update-available");
+    await click("#updOpen");
+    await until("the release page", async () => (await call("openedRelease")) === expected);
+    check(!q("#dlg").open, "the release page opens for exactly the announced release");
+
+    // GitHub unreachable: the app keeps working, a notice already shown stays,
+    // automatic checks stay quiet, and "Check now" says what happened.
+    const toastShown = () => q("#toast").classList.contains("show");
+    q("#toast").className = "";
+    await call("setReleases", { releases: { simulate: "error" } });
+    await checkForUpdate();
+    check(!q("#updateBtn").hidden, "a failed check keeps the notice that was already shown");
+    check(!toastShown(), "an automatic check that fails says nothing");
+    await click("#settingsBtn");
+    await until("the settings", () => q("#dlg[open] #updNow"));
+    await click("#updNow");
+    await shows("#toast", "Couldn't reach GitHub");
+    check(true, "Check now reports a failed check");
+    q("#toast").className = "";
+
+    // A network that never answers: the check gives up after its time limit.
+    await call("setReleases", { releases: { simulate: "hang", timeoutMs: 1500 } });
+    const started = Date.now();
+    await click("#updNow");
+    const busy = Date.now();
+    await api("state");
+    check(Date.now() - busy < 1000, "the app keeps responding while a check hangs");
+    await click("#updNow"); // asking again while it runs waits for the same check
+    await until("the timeout message", () => toastShown() && text("#toast").includes("Couldn't reach GitHub"), 8000);
+    check(Date.now() - started >= 1400, "a hanging check gives up after its time limit, not before");
+    q("#toast").className = "";
+    await click("#dlg [data-close]");
+
+    // Back to nothing newer: the notice goes away on the next check.
+    await call("setReleases", { releases: [] });
+    await checkForUpdate();
+    await until("the notice gone", () => q("#updateBtn").hidden);
+    await shot("17-dark");
     await click("#keysBtn");
     await until("the key in the dialog", () => q("#dlg [data-copy]"));
-    await shot("17-dark-keys");
+    await shot("18-dark-keys");
     await click("#dlg [data-close]");
     await click("#changesBtn");
     await until("the changes", () => q("#dlg[open] .chg"));
-    await shot("18-dark-changes");
+    await shot("19-dark-changes");
     await click("#dlg [data-close]");
 
     await call("done", { ok: true, log });

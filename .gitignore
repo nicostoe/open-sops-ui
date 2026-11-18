@@ -3,3 +3,4 @@ node_modules/
 src-tauri/gen/
 vendor/
 ui-test-output/
+src-tauri/tauri.version.conf.json

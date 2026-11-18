@@ -72,6 +72,8 @@ struct Config {
     recent: Vec<String>,
     /// Seconds after which a copied value is removed from the clipboard; 0 keeps it.
     clipboard_clear_seconds: Option<u32>,
+    /// Whether to look for a newer release on start and once a day; on unless turned off.
+    check_updates: Option<bool>,
 }
 
 const DEFAULT_CLIPBOARD_CLEAR_SECONDS: u32 = 60;
@@ -913,6 +915,45 @@ fn scan(dir: &Path, depth: u32, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// The newest release worth announcing to someone running `current`, from a
+/// list of releases as the GitHub API returns them.
+///
+/// A release counts when it's newer than `current`. Someone on a stable
+/// version only hears about stable releases; someone on a pre-release also
+/// hears about newer pre-releases, and about the stable release that follows.
+/// Drafts and tags that aren't versions are ignored.
+pub fn pick_update(current: &str, releases: &Value) -> Option<Value> {
+    let current = semver::Version::parse(current.trim_start_matches('v')).ok()?;
+    let on_prerelease = !current.pre.is_empty();
+    releases
+        .as_array()?
+        .iter()
+        .filter(|r| r["draft"] != true)
+        .filter_map(|r| {
+            let tag = r["tag_name"].as_str()?;
+            let version = semver::Version::parse(tag.strip_prefix('v')?).ok()?;
+            let prerelease = !version.pre.is_empty() || r["prerelease"] == true;
+            (version > current && (on_prerelease || !prerelease))
+                .then_some((version, tag, r, prerelease))
+        })
+        .max_by(|a, b| a.0.cmp(&b.0))
+        .map(|(version, tag, r, prerelease)| {
+            json!({
+                "version": version.to_string(),
+                "tag": tag,
+                "prerelease": prerelease,
+                "notes": r["body"].as_str().unwrap_or(""),
+                "published": r["published_at"],
+            })
+        })
+}
+
+/// Release tags as GitHub URLs may contain them; anything else is refused.
+pub fn valid_release_tag(tag: &str) -> bool {
+    tag.strip_prefix('v')
+        .is_some_and(|v| semver::Version::parse(v).is_ok())
+}
+
 pub struct App {
     config: Config,
     session_keys: Vec<KeySource>,
@@ -923,6 +964,8 @@ pub struct App {
     git: Option<PathBuf>,
     bundled_dirs: Vec<PathBuf>,
     next_id: u32,
+    /// The version of this build, shown in the app and compared with releases.
+    version: String,
 }
 
 impl App {
@@ -948,6 +991,7 @@ impl App {
             extra_files: vec![],
             bundled_dirs,
             next_id: 0,
+            version: env!("CARGO_PKG_VERSION").to_string(),
         };
         app.remember_folder();
         app.reload_keys();
@@ -955,6 +999,15 @@ impl App {
     }
 
     /// Seconds after which a copied value is removed from the clipboard; 0 keeps it.
+    /// Sets the version of this build (from the release tag); see scripts/version.sh.
+    pub fn set_version(&mut self, version: &str) {
+        self.version = version.to_string();
+    }
+
+    pub fn check_updates(&self) -> bool {
+        self.config.check_updates.unwrap_or(true)
+    }
+
     pub fn clipboard_clear_seconds(&self) -> u32 {
         self.config
             .clipboard_clear_seconds
@@ -1444,7 +1497,11 @@ impl App {
             "recent": self.config.recent.iter().filter(|f| Path::new(f).is_dir()).collect::<Vec<_>>(),
             "keys": keys,
             "book": self.config.book,
-            "settings": { "clipboardClearSeconds": self.clipboard_clear_seconds() },
+            "version": self.version,
+            "settings": {
+                "clipboardClearSeconds": self.clipboard_clear_seconds(),
+                "checkUpdates": self.check_updates(),
+            },
         })
     }
 
@@ -1721,14 +1778,25 @@ impl App {
             }
 
             "setSettings" => {
-                let seconds = body.get("clipboardClearSeconds").and_then(Value::as_u64);
-                let seconds = seconds
-                    .filter(|s| *s <= 3600)
-                    .ok_or("Choose a time of up to one hour.")?;
-                self.config.clipboard_clear_seconds = Some(seconds as u32);
+                // Each setting is optional, so the UI can change one at a time.
+                if let Some(seconds) = body.get("clipboardClearSeconds") {
+                    let seconds = seconds
+                        .as_u64()
+                        .filter(|s| *s <= 3600)
+                        .ok_or("Choose a time of up to one hour.")?;
+                    self.config.clipboard_clear_seconds = Some(seconds as u32);
+                }
+                if let Some(on) = body.get("checkUpdates") {
+                    self.config.check_updates = Some(on.as_bool().ok_or("Choose on or off.")?);
+                }
                 self.save_config()?;
                 Ok(self.state())
             }
+
+            "pickUpdate" => Ok(json!({
+                "current": self.version,
+                "update": pick_update(&self.version, body.get("releases").unwrap_or(&Value::Null)),
+            })),
 
             "bookRemove" => {
                 let key = text("key");
@@ -1995,6 +2063,70 @@ mod tests {
                 v: "1".into()
             }
         );
+    }
+
+    #[test]
+    fn picks_the_update_to_announce() {
+        let r = |tag: &str, pre: bool, draft: bool| json!({ "tag_name": tag, "prerelease": pre, "draft": draft, "body": format!("notes {tag}") });
+        let feed = json!([
+            r("v1.0.0", false, false),
+            r("v1.1.0-beta.1", true, false),
+            r("v0.1.0-beta.5", true, false),
+            r("v0.1.0-beta.4", true, false),
+            r("v0.1.0", false, false),
+            r("v9.9.9", false, true),       // draft
+            r("nightly", true, false),      // not a version
+            r("v2.0.0-rc.1", false, false), // flagged wrong on GitHub, but its tag says pre-release
+        ]);
+        let picked = |current: &str| {
+            pick_update(current, &feed).map(|u| u["tag"].as_str().unwrap().to_string())
+        };
+        // A pre-release hears about the newest release of any kind.
+        assert_eq!(picked("0.1.0-beta.4").as_deref(), Some("v2.0.0-rc.1"));
+        let only_betas = json!([
+            r("v0.1.0-beta.5", true, false),
+            r("v0.1.0-beta.4", true, false)
+        ]);
+        assert_eq!(
+            pick_update("0.1.0-beta.4", &only_betas).unwrap()["tag"],
+            "v0.1.0-beta.5"
+        );
+        let beta_then_stable = json!([r("v0.1.0", false, false), r("v0.1.0-beta.5", true, false)]);
+        assert_eq!(
+            pick_update("0.1.0-beta.4", &beta_then_stable).unwrap()["tag"],
+            "v0.1.0"
+        );
+        // A stable version never hears about a pre-release.
+        assert_eq!(picked("0.1.0").as_deref(), Some("v1.0.0"));
+        assert_eq!(picked("1.0.0"), None);
+        // Nothing newer, nothing to say; dev builds count as pre-releases of their base.
+        assert_eq!(pick_update("0.1.0-beta.5", &only_betas), None);
+        assert_eq!(
+            pick_update("0.1.0-dev.57", &beta_then_stable).unwrap()["tag"],
+            "v0.1.0"
+        );
+        assert_eq!(pick_update("not a version", &feed), None);
+        assert_eq!(
+            pick_update("0.1.0", &json!({ "message": "rate limited" })),
+            None
+        );
+        let u = pick_update("0.1.0", &feed).unwrap();
+        assert_eq!(
+            (
+                u["version"].as_str(),
+                u["prerelease"].as_bool(),
+                u["notes"].as_str()
+            ),
+            (Some("1.0.0"), Some(false), Some("notes v1.0.0"))
+        );
+    }
+
+    #[test]
+    fn release_tags_for_urls() {
+        assert!(valid_release_tag("v1.2.3") && valid_release_tag("v0.1.0-beta.4"));
+        for bad in ["1.2.3", "v1.2", "v1.2.3/../../evil", "v1.2.3?x=1", "", "v"] {
+            assert!(!valid_release_tag(bad), "{bad}");
+        }
     }
 
     #[test]

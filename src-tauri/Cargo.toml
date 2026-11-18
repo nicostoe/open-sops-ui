@@ -14,3 +14,4 @@ open-sops-ui-core = { path = "../core" }
 tauri = { version = "2", features = [] }
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"

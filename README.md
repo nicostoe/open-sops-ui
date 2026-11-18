@@ -2,7 +2,7 @@
 
 A desktop app for viewing, editing and encrypting env files with [SOPS](https://github.com/getsops/sops) and age keys. Built with [Tauri](https://tauri.app) for Linux, Windows and macOS.
 
-Decrypted values are held in memory only. The app makes no network requests.
+Decrypted values are held in memory only. The only network request the app makes is the optional update check, which reads the list of releases from GitHub.
 
 <p align="center">
   <img src="docs/screenshots/editor-light.png" width="49%" alt="Editing an encrypted env file: one value changed, one variable added">
@@ -17,6 +17,7 @@ Decrypted values are held in memory only. The app makes no network requests.
 - Edits values in a table and saves each change through `sops` on its own, so unchanged values stay byte-identical in Git and nothing decrypted is written to disk, not even to a temp file.
 - Removes a copied value from the clipboard again after a time you choose in the settings (one minute by default).
 - Creates new encrypted env files: pick a folder and a name, fill in the variables, and the file is written already encrypted.
+- Tells you when a newer version is available: it checks GitHub's release list on start and once a day, and shows an icon next to the settings. A stable version only announces stable releases; a pre-release also announces newer pre-releases. You can turn the check off in the settings. Nothing is downloaded or installed automatically.
 - Picks up changes made outside the app, such as a Git pull: the file list refreshes when you switch back to the window or press the refresh button, and an open file reloads unless you have unsaved edits.
 - Asks before overwriting a file that changed on disk after you opened it, for example through a Git pull.
 - Reads plaintext files in UTF-8, UTF-16 and Windows-1252; encrypted files are always written as UTF-8.
@@ -108,7 +109,9 @@ Each release lists what changed since the previous one: features, bug fixes, sec
 scripts/release-notes.sh
 ```
 
-The release runs the full build workflow first, so nothing is published unless every test passes. The tag has to match `version` in `src-tauri/tauri.conf.json`, because the package file names come from there; for a new version, change that one line, commit, then tag.
+The release runs the full build workflow first, so nothing is published unless every test passes.
+
+The tag also sets the version compiled into the app (`scripts/version.sh`), which the update notice compares. The packages keep the plain `x.y.z`, because `.rpm` doesn't accept a pre-release in the version and `.deb` would sort a release below its own betas. Where a format has a separate field, it carries the pre-release: the `.rpm` release (`0.1.0-0.beta.4`, so `dnf` sorts betas before the release) and the `.msi`'s fourth number (`0.1.0.4`, a label only, as Windows compares the first three). Installing a newer beta `.deb` over an older one of the same base version may need `sudo apt install --reinstall ./file.deb`. The tag has to match `version` in `src-tauri/tauri.conf.json`, because the package file names come from there; for a new version, change that one line, commit, then tag.
 
 The bundled `sops` version is pinned in `scripts/fetch-sops.sh`. The script verifies the release's checksums file with cosign and then the binary's SHA-256. [Renovate](https://docs.renovatebot.com) opens a pull request when a new `sops` release appears (`renovate.json`); the Renovate GitHub App has to be installed on the repository for that. `sops` is licensed under the MPL 2.0, and its licence text ships next to the binary.
 

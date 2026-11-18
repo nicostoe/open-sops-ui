@@ -105,6 +105,11 @@ jobs:
 
       # Tests run against the pinned sops, so a version bump is checked on
       # every platform before it's merged.
+      # The version comes from the tag (a release) or the run number (any other
+      # build), so every CI run builds and tests a pre-release version too.
+      - name: Set the version
+        run: scripts/version.sh
+
       - name: Download and verify the pinned sops
         run: |
           scripts/fetch-sops.sh ${{ matrix.target }}
@@ -123,7 +128,7 @@ jobs:
 
       - name: Build packages with sops included
         run: |
-          npm run build -- --target ${{ matrix.target }} --config src-tauri/tauri.sops.conf.json
+          npm run build -- --target ${{ matrix.target }} --config src-tauri/tauri.sops.conf.json --config src-tauri/tauri.version.conf.json
           scripts/collect-bundles.sh ${{ matrix.target }} dist -with-sops
 
       - name: Install the package and check it finds its sops
@@ -160,7 +165,7 @@ jobs:
 
       - name: Build packages without sops
         run: |
-          npm run build -- --target ${{ matrix.target }}
+          npm run build -- --target ${{ matrix.target }} --config src-tauri/tauri.version.conf.json
           scripts/collect-bundles.sh ${{ matrix.target }} dist
 
       - uses: actions/upload-artifact@v7
