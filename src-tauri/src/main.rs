@@ -138,24 +138,55 @@ fn self_check(bundled: &[PathBuf], version: &str, out_file: Option<&String>) -> 
     });
 }
 
-/// Opens a release's page in the browser. The page never passes a URL, only a
-/// tag, so it can't send the browser anywhere but this project's releases.
-#[tauri::command]
-fn open_release_page(app: tauri::AppHandle, tag: String) -> Result<(), String> {
+// The page never passes a URL to open, only a release tag or the name of one of
+// these pages, so it can't send the browser anywhere but this project.
+const REPO_URL: &str = "https://github.com/nicostoe/open-sops-ui";
+const RELEASES_URL: &str = "https://github.com/nicostoe/open-sops-ui/releases";
+
+fn open_in_browser(app: &tauri::AppHandle, url: String) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
-    if !open_sops_ui_core::valid_release_tag(&tag) {
-        return Err("That isn't a release.".into());
-    }
-    if ui_test::record_opened_release(&tag) {
+    // The UI self-test notes the address instead of starting a browser.
+    if ui_test::record_opened_page(&url) {
         return Ok(());
     }
-    let url = format!("{RELEASES_URL}/tag/{tag}");
     app.opener()
         .open_url(url, None::<&str>)
         .map_err(|_| "Couldn't open the browser.".to_string())
 }
 
-const RELEASES_URL: &str = "https://github.com/nicostoe/open-sops-ui/releases";
+/// The page of a release. Development builds (`x.y.z-dev.N`) have none, so
+/// they get the list of releases.
+fn release_url(tag: &str) -> Option<String> {
+    if !open_sops_ui_core::valid_release_tag(tag) {
+        return None;
+    }
+    Some(if tag.contains("-dev.") {
+        RELEASES_URL.to_string()
+    } else {
+        format!("{RELEASES_URL}/tag/{tag}")
+    })
+}
+
+/// Fixed pages of the project: its repository and where to report a problem.
+fn project_url(page: &str) -> Option<String> {
+    match page {
+        "repo" => Some(REPO_URL.to_string()),
+        "issues" => Some(format!("{REPO_URL}/issues")),
+        _ => None,
+    }
+}
+
+#[tauri::command]
+fn open_release_page(app: tauri::AppHandle, tag: String) -> Result<(), String> {
+    let url = release_url(&tag).ok_or("That isn't a release.")?;
+    open_in_browser(&app, url)
+}
+
+#[tauri::command]
+fn open_project_page(app: tauri::AppHandle, page: String) -> Result<(), String> {
+    let url = project_url(&page).ok_or("That page doesn't exist.")?;
+    open_in_browser(&app, url)
+}
 
 /// The version of this build: the release tag, compiled in by CI (see
 /// scripts/version.sh). Local builds fall back to the version in tauri.conf.json.
@@ -192,12 +223,18 @@ fn main() {
             let mut core = App::new(folder, bundled);
             core.set_version(&version);
             app.manage(Shared(Mutex::new(core)));
+            if ui_test::active() {
+                if let Some(window) = app.get_webview_window("main") {
+                    window.set_title(ui_test::WINDOW_TITLE)?;
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             api,
             copy,
             open_release_page,
+            open_project_page,
             ui_test::ui_test
         ])
         .build(context)
@@ -221,6 +258,26 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_this_projects_pages_open() {
+        assert_eq!(project_url("repo").as_deref(), Some(REPO_URL));
+        assert_eq!(
+            project_url("issues").as_deref(),
+            Some("https://github.com/nicostoe/open-sops-ui/issues")
+        );
+        assert_eq!(project_url("https://evil.example"), None);
+        assert_eq!(
+            release_url("v0.1.0-beta.5").as_deref(),
+            Some("https://github.com/nicostoe/open-sops-ui/releases/tag/v0.1.0-beta.5")
+        );
+        assert_eq!(
+            release_url("v0.1.0-dev.57").as_deref(),
+            Some(RELEASES_URL),
+            "dev builds have no release page"
+        );
+        assert_eq!(release_url("v1.0.0/../../evil"), None);
+    }
 
     /// A sops lying next to an AppImage file must never be picked up.
     #[test]

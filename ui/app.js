@@ -454,9 +454,13 @@ function settingsDialog() {
     <h3>Updates</h3>
     <label class="check setting"><input type="checkbox" id="updChk" ${S.settings.checkUpdates ? "checked" : ""}>
       <span>Look for a new version on start and once a day</span></label>
-    <div class="formrow" style="align-items:center"><span class="muted small" style="flex:1">Version ${esc(S.version)}</span>
+    <div class="formrow" style="align-items:center"><span class="muted small" style="flex:1">Asks GitHub for the list of releases. Nothing is downloaded or installed.</span>
       <button class="btn sm" id="updNow">Check now</button></div>
-    <p class="muted small">Asks GitHub for the list of releases. Nothing is downloaded or installed.</p>`);
+    <div class="about small">
+      <button class="linkbtn" id="aboutVersion" title="Release page of this version">Version ${esc(S.version)}</button><span aria-hidden="true">·</span>
+      <button class="linkbtn" id="aboutRepo">Source on GitHub</button><span aria-hidden="true">·</span>
+      <button class="linkbtn" id="aboutIssues">Report a problem</button>
+    </div>`);
   $("#themeSel", dlg).onchange = (e) => setTheme(e.target.value);
   $("#updChk", dlg).onchange = async (e) => {
     try {
@@ -466,6 +470,11 @@ function settingsDialog() {
     } catch (err) { fail(err); }
   };
   $("#updNow", dlg).onclick = () => checkForUpdate(true);
+  const openPage = (command, args) => T.core.invoke(command, args).catch((e) =>
+    toast(typeof e === "string" ? e : "Couldn't open the browser.", true));
+  $("#aboutVersion", dlg).onclick = () => openPage("open_release_page", { tag: `v${S.version}` });
+  $("#aboutRepo", dlg).onclick = () => openPage("open_project_page", { page: "repo" });
+  $("#aboutIssues", dlg).onclick = () => openPage("open_project_page", { page: "issues" });
   $("#clipSel", dlg).onchange = async (e) => {
     try { setState(await api("setSettings", { clipboardClearSeconds: +e.target.value })); toast("Setting saved"); } catch (err) { fail(err); }
   };

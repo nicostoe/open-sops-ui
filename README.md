@@ -17,7 +17,7 @@ Decrypted values are held in memory only. The only network request the app makes
 - Edits values in a table and saves each change through `sops` on its own, so unchanged values stay byte-identical in Git and nothing decrypted is written to disk, not even to a temp file.
 - Removes a copied value from the clipboard again after a time you choose in the settings (one minute by default).
 - Creates new encrypted env files: pick a folder and a name, fill in the variables, and the file is written already encrypted.
-- Tells you when a newer version is available: it checks GitHub's release list on start and once a day, and shows an icon next to the settings. A stable version only announces stable releases; a pre-release also announces newer pre-releases. You can turn the check off in the settings. Nothing is downloaded or installed automatically.
+- Tells you when a newer version is available: it checks GitHub's release list on start and once a day, and shows an icon next to the settings. A stable version only announces stable releases; a pre-release also announces newer pre-releases. You can turn the check off in the settings. Nothing is downloaded or installed automatically. The bottom of the settings links to the release page of your version, this repository, and the issue list for reporting a problem.
 - Picks up changes made outside the app, such as a Git pull: the file list refreshes when you switch back to the window or press the refresh button, and an open file reloads unless you have unsaved edits.
 - Asks before overwriting a file that changed on disk after you opened it, for example through a Git pull.
 - Reads plaintext files in UTF-8, UTF-16 and Windows-1252; encrypted files are always written as UTF-8.

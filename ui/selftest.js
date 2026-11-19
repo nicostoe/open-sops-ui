@@ -250,6 +250,22 @@
     check(text("#dlg").includes(`Version ${S.version}`), "the settings show the app's version");
     check(q("#updChk").checked, "update checks are on by default");
     await shot("15-settings");
+
+    // The footer links open only this project's pages; the version opens its
+    // release, or the release list for a development build, which has none.
+    const opened = async (selector, url) => {
+      await click(selector);
+      await until(`the page behind ${selector}`, async () => (await call("openedPage")) === url);
+    };
+    const projectUrl = "https://github.com/nicostoe/open-sops-ui";
+    check(q("#aboutVersion").innerText === `Version ${S.version}`, "the footer shows the version as a link");
+    await opened("#aboutVersion", S.version.includes("-dev.") ? `${projectUrl}/releases` : `${projectUrl}/releases/tag/v${S.version}`);
+    check(true, "the version opens its release page");
+    await opened("#aboutRepo", projectUrl);
+    check(true, "Source on GitHub opens the repository");
+    await opened("#aboutIssues", `${projectUrl}/issues`);
+    check(true, "Report a problem opens the issue list");
+    check(q("#dlg").open, "opening a link keeps the settings open");
     const themeSel = q("#themeSel");
     themeSel.value = "dark";
     themeSel.dispatchEvent(new Event("change", { bubbles: true }));
@@ -287,7 +303,8 @@
     q("#toast").className = "";
     await shot("16-update-available");
     await click("#updOpen");
-    await until("the release page", async () => (await call("openedRelease")) === expected);
+    await until("the release page", async () =>
+      (await call("openedPage")) === `https://github.com/nicostoe/open-sops-ui/releases/tag/${expected}`);
     check(!q("#dlg").open, "the release page opens for exactly the announced release");
 
     // GitHub unreachable: the app keeps working, a notice already shown stays,
