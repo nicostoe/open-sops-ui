@@ -13,6 +13,15 @@ use std::process::{Command, Stdio};
 
 use serde_json::{json, Value};
 
+/// The window title in test mode. Screenshots find the window by it, so it
+/// must never match a copy of the app the user has open on the same desktop.
+pub const WINDOW_TITLE: &str = "Open SOPS UI self-test";
+
+/// True when the app runs its scripted self-test.
+pub fn active() -> bool {
+    output_dir().is_some()
+}
+
 fn output_dir() -> Option<PathBuf> {
     std::env::var_os("OPEN_SOPS_UI_SELFTEST")
         .filter(|v| !v.is_empty())
@@ -44,7 +53,7 @@ fn screenshot(file: &Path) -> bool {
     } else {
         // ImageMagick; needs an X11 display (Xvfb in CI).
         let mut c = Command::new("import");
-        c.args(["-window", "Open SOPS UI", &path]);
+        c.args(["-window", WINDOW_TITLE, &path]);
         c
     };
     cmd.stdin(Stdio::null())
@@ -92,11 +101,11 @@ fn commit(file: &Path) -> bool {
     git(&["add", "--", &name]) && git(&["commit", "-q", "-m", "Encrypt the env file", "--", &name])
 }
 
-/// In test mode, notes which release page would open instead of starting a
-/// browser on the CI runner. Returns false outside test mode.
-pub fn record_opened_release(tag: &str) -> bool {
+/// In test mode, notes which address would open instead of starting a browser
+/// on the CI runner. Returns false outside test mode.
+pub fn record_opened_page(url: &str) -> bool {
     match output_dir() {
-        Some(dir) => std::fs::write(dir.join("opened-release.txt"), tag).is_ok(),
+        Some(dir) => std::fs::write(dir.join("opened-page.txt"), url).is_ok(),
         None => false,
     }
 }
@@ -117,13 +126,14 @@ pub fn ui_test(app: tauri::AppHandle, action: String, body: Value) -> Result<Val
         }
         "setReleases" => {
             let text = serde_json::to_string(&body["releases"]).unwrap_or_else(|_| "[]".into());
-            Ok(json!(std::fs::write(dir.join("releases.json"), text).is_ok()))
+            Ok(json!(
+                std::fs::write(dir.join("releases.json"), text).is_ok()
+            ))
         }
-        // Which release page the app would have opened; see `record_opened_release`.
-        "openedRelease" => Ok(json!(std::fs::read_to_string(
-            dir.join("opened-release.txt")
-        )
-        .ok())),
+        // Which address the app would have opened; see `record_opened_page`.
+        "openedPage" => Ok(json!(
+            std::fs::read_to_string(dir.join("opened-page.txt")).ok()
+        )),
         "shot" => {
             let name: String = body["name"]
                 .as_str()
