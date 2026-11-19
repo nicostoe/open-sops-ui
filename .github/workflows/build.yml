@@ -303,3 +303,26 @@ jobs:
         with:
           name: screenshots
           path: all/
+
+  # The one check the ruleset for main requires. It passes only when every
+  # job it waits for succeeded, so adding, renaming or removing jobs needs no
+  # change in the GitHub settings. A job missing here doesn't block merging:
+  # the macOS 15 checks stay out on purpose, because GitHub often has no free
+  # runner for them. Add every other new job to `needs`.
+  required:
+    name: All checks passed
+    needs: [build, distros]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every required job succeeded
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          # "skipped" or "cancelled" count as not passed: a job that never ran proved nothing.
+          failed="$(echo "$RESULTS" | jq -r 'to_entries[] | select(.value.result != "success") | .key')"
+          if [ -n "$failed" ]; then
+            echo "::error title=Required checks not passed::$(echo $failed | tr ' ' ',') didn't succeed. A job that got no runner shows as cancelled; re-run the failed jobs."
+            exit 1
+          fi
