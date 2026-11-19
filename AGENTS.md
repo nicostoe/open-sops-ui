@@ -18,7 +18,7 @@ A Tauri 2 desktop app for SOPS-encrypted env files. See [README.md](README.md) f
 - `scripts/smoke-test.sh`: installs the built package and runs `open-sops-ui --self-check` (CI only; it installs the app).
 - `scripts/ui-test.sh`, `scripts/distro-test.sh`: run the UI test, on a runner or inside a distribution container.
 - `scripts/version.sh`: the build's version from the tag (or `x.y.z-dev.<run>` in other CI runs). Sets `OPEN_SOPS_UI_VERSION`, which is compiled into the app, and writes `src-tauri/tauri.version.conf.json` (git-ignored) with the MSI version and rpm release for `tauri build --config`.
-- `cliff.toml`, `scripts/release-notes.sh`: release notes from commit messages. The release workflow attaches them to each release; every CI run on Linux shows the preview for the next one on its summary page.
+- `cliff.toml`, `scripts/release-notes.sh`: release notes from commit messages, opened by the annotated tag's message if it says more than the tag name. The release workflow attaches them to each release; every CI run on Linux shows the preview for the next one on its summary page, and `scripts/test-release-notes.sh` checks them against throwaway tags.
 - `scripts/collect-bundles.sh`, `scripts/ci-annotate.sh`: CI helpers for package names and public failure annotations.
 - `app-icon.svg`: icon source. Regenerate with `npx tauri icon app-icon.svg`, then delete `src-tauri/icons/android` and `ios`.
 

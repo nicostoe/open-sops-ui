@@ -96,6 +96,10 @@ jobs:
             scripts/release-notes.sh
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Test the release notes
+        if: runner.os == 'Linux'
+        run: scripts/test-release-notes.sh
+
       - name: Check script syntax
         run: |
           node --check ui/app.js
