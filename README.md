@@ -103,7 +103,7 @@ git tag v0.1.0-beta.1 && git push origin v0.1.0-beta.1
 
 A tag with a suffix after the version (`-beta.1`, `-rc.1`) is published as a pre-release; a plain `v0.1.0` as a normal release.
 
-Each release lists what changed since the previous one: features, bug fixes, security fixes and dependency updates, generated from the commit messages. A pre-release covers the changes since the tag before it; a release covers everything since the last release, betas included. To see what the next release would contain:
+Each release lists what changed since the previous one: features, bug fixes and dependency updates, generated from the commit messages (`feat:` and `fix:` commits, and Renovate's `[renovate]` updates; internal work is left out). A pre-release covers the changes since the tag before it; a release covers everything since the last release, betas included. To see what the next release would contain:
 
 ```bash
 scripts/release-notes.sh

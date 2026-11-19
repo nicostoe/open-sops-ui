@@ -1,9 +1,10 @@
 # Release notes for GitHub releases, generated from commit messages by
 # git-cliff (https://git-cliff.org). Preview with scripts/release-notes.sh.
 #
-# Commit subjects follow Conventional Commits; see "Commit messages" in
-# AGENTS.md. The type decides the section; types for internal work are left
-# out, so the notes show what changes for people using the app.
+# Only changes people using the app notice are listed (see "Commit messages"
+# in AGENTS.md): commits starting with "feat:" or "fix:" (Conventional
+# Commits), and Renovate's dependency updates, which start with "[renovate]".
+# Everything else, such as CI, tests or docs, carries no prefix and is left out.
 
 [changelog]
 # The release title already names the version, so the body starts with the sections.
@@ -15,7 +16,7 @@ No changes to the app in this release.
 {%- for group, commits in commits | group_by(attribute="group") %}
 ### {{ group | striptags | trim }}
 {% for commit in commits %}
-- {% if commit.breaking %}**Breaking:** {% endif %}{{ commit.message | split(pat="\n") | first | trim | upper_first }} \
+- {% if commit.breaking %}**Breaking:** {% endif %}{{ commit.message | split(pat="\n") | first | replace(from="[renovate] ", to="") | trim | upper_first }} \
 ([{{ commit.id | truncate(length=7, end="") }}](https://github.com/nicostoe/open-sops-ui/commit/{{ commit.id }}))
 {%- endfor %}
 {% endfor -%}
@@ -25,7 +26,7 @@ trim = true
 
 [git]
 conventional_commits = true
-# Commits that don't follow the convention still appear, under "Other changes".
+# Renovate's "[renovate] …" commits aren't conventional; the parsers below pick them up.
 filter_unconventional = false
 split_commits = false
 protect_breaking_commits = true
@@ -33,14 +34,12 @@ filter_commits = false
 topo_order = false
 sort_commits = "oldest"
 commit_parsers = [
-  { message = "^Merge ", skip = true },
   # The HTML comments only fix the order of the sections.
-  { message = "^[a-z]+\\(deps\\)", group = "<!-- 4 -->Dependencies" },
-  { message = "^[a-z]+\\(security\\)", group = "<!-- 2 -->Security" },
-  { message = "^feat", group = "<!-- 0 -->Features" },
-  { message = "^fix", group = "<!-- 1 -->Bug fixes" },
-  { message = "^perf", group = "<!-- 3 -->Performance" },
-  { message = "^revert", group = "<!-- 5 -->Reverted" },
-  { message = "^(docs|test|ci|build|chore|refactor|style)", skip = true },
-  { message = ".*", group = "<!-- 6 -->Other changes" },
+  { message = "^\\[renovate\\]", group = "<!-- 2 -->Dependencies" },
+  # Renovate's commits from before the "[renovate]" prefix.
+  { message = "^[a-z]+\\(deps\\)!?: ", group = "<!-- 2 -->Dependencies" },
+  { message = "^feat(\\(.+\\))?!?: ", group = "<!-- 0 -->Features" },
+  { message = "^fix(\\(.+\\))?!?: ", group = "<!-- 1 -->Bug fixes" },
+  # Everything else: internal work, merge commits, older types like ci: or docs:.
+  { message = ".*", skip = true },
 ]
