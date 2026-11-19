@@ -102,16 +102,15 @@ fn api(state: tauri::State<'_, Shared>, action: String, body: Value) -> Result<V
 }
 
 /// Folders searched for a shipped sops binary, most specific first.
+///
+/// Only folders that belong to the app itself: the executable's folder and the
+/// bundle's resources. The folder an AppImage file sits in is deliberately not
+/// one of them. AppImages are often started from Downloads, and a stray file
+/// named `sops` there would otherwise run with the user's keys. Inside a running
+/// AppImage, the executable's folder is its own read-only mount.
 fn bundled_dirs(exe: &Path, resource_dir: Option<PathBuf>) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
-    let candidates = [
-        // An AppImage runs from a temporary mount; look beside the AppImage file itself.
-        std::env::var_os("APPIMAGE")
-            .map(PathBuf::from)
-            .and_then(|p| p.parent().map(PathBuf::from)),
-        exe.parent().map(PathBuf::from),
-        resource_dir,
-    ];
+    let candidates = [exe.parent().map(PathBuf::from), resource_dir];
     for dir in candidates.into_iter().flatten() {
         if !dirs.contains(&dir) {
             dirs.push(dir);
@@ -217,4 +216,24 @@ fn main() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A sops lying next to an AppImage file must never be picked up.
+    #[test]
+    fn the_folder_an_appimage_sits_in_is_not_searched() {
+        let downloads = std::env::temp_dir().join("open-sops-ui-downloads");
+        std::env::set_var("APPIMAGE", downloads.join("Open-SOPS-UI.AppImage"));
+        let exe = Path::new("/tmp/.mount_OpenSOabc/usr/bin/open-sops-ui");
+        let resources = PathBuf::from("/tmp/.mount_OpenSOabc/usr/lib/Open SOPS UI");
+        let dirs = bundled_dirs(exe, Some(resources.clone()));
+        assert_eq!(
+            dirs,
+            vec![PathBuf::from("/tmp/.mount_OpenSOabc/usr/bin"), resources]
+        );
+        assert!(!dirs.contains(&downloads));
+    }
 }

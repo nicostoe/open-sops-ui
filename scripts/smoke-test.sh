@@ -37,6 +37,17 @@ case "$target" in
     appimage="$(first "$src"/appimage/*.AppImage)"
     chmod +x "$appimage"
     check "AppImage" "$appimage" --appimage-extract-and-run
+    # A decoy named sops next to the AppImage, as in a Downloads folder, must
+    # be ignored: the app has to keep using the sops inside its package.
+    decoy_dir="$(mktemp -d)"
+    cp "$appimage" "$decoy_dir/"
+    printf '#!/bin/sh\necho "sops 9.9.9"\ntouch "%s/decoy-ran"\n' "$decoy_dir" > "$decoy_dir/sops"
+    chmod +x "$decoy_dir/sops"
+    check "AppImage next to a decoy sops" "$decoy_dir/$(basename "$appimage")" --appimage-extract-and-run
+    if [ -e "$decoy_dir/decoy-ran" ] || grep -q '9.9.9' "$report"; then
+      echo "smoke-test: the AppImage ran the sops lying next to it" >&2
+      exit 1
+    fi
     ;;
   *-apple-darwin)
     # The .dmg only wraps this bundle; running it in place avoids mounting
