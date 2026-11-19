@@ -56,7 +56,11 @@ jobs:
       - name: Write the release notes
         env:
           TAG: ${{ github.ref_name }}
-        run: scripts/release-notes.sh "$TAG" > "$RUNNER_TEMP/notes.md" && cat "$RUNNER_TEMP/notes.md"
+        # checkout can leave the pushed tag as a lightweight one; fetching it
+        # again restores the annotated tag, whose message opens the notes.
+        run: |
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          scripts/release-notes.sh "$TAG" > "$RUNNER_TEMP/notes.md" && cat "$RUNNER_TEMP/notes.md"
 
       - uses: actions/download-artifact@v8
         with:

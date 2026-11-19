@@ -9,7 +9,15 @@
 [changelog]
 # The release title already names the version, so the body starts with the sections.
 header = ""
+#
+# An annotated tag's message becomes the release's introduction, for example
+# to describe a major release as a whole:
+#   git tag -a v2.0.0 -m v2.0.0 -m "What this release is about."
+# A message that only repeats the tag name is left out.
 body = """
+{%- if message %}{% set intro = message | trim | trim_start_matches(pat=version) | trim %}{% if intro %}
+{{ intro }}
+{% endif %}{% endif -%}
 {%- if commits | length == 0 %}
 No changes to the app in this release.
 {% endif -%}

@@ -109,6 +109,12 @@ Each release lists what changed since the previous one: features, bug fixes and 
 scripts/release-notes.sh
 ```
 
+An annotated tag's message opens the notes, to describe a release as a whole. A message that only repeats the tag name is left out:
+
+```bash
+git tag -a v2.0.0 -m v2.0.0 -m "What this release is about." && git push origin v2.0.0
+```
+
 The release runs the full build workflow first, so nothing is published unless every test passes.
 
 The tag also sets the version compiled into the app (`scripts/version.sh`), which the update notice compares. The packages keep the plain `x.y.z`, because `.rpm` doesn't accept a pre-release in the version and `.deb` would sort a release below its own betas. Where a format has a separate field, it carries the pre-release: the `.rpm` release (`0.1.0-0.beta.4`, so `dnf` sorts betas before the release) and the `.msi`'s fourth number (`0.1.0.4`, a label only, as Windows compares the first three). Installing a newer beta `.deb` over an older one of the same base version may need `sudo apt install --reinstall ./file.deb`. The tag has to match `version` in `src-tauri/tauri.conf.json`, because the package file names come from there; for a new version, change that one line, commit, then tag.
