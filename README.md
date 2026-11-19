@@ -58,7 +58,7 @@ Other systems may work but aren't checked. The Linux packages need at least the 
    open-sops-ui path/to/project
    ```
 
-A `sops` binary shipped with the app, or placed next to it, is used first; otherwise the one on your `PATH`.
+A `sops` binary shipped with the app is used first; otherwise the one on your `PATH`. A file named `sops` that merely sits in the same folder as an AppImage is ignored, so a stray download can't take its place.
 
 Git is optional. Without a repository, or without `git` installed, the app works the same and simply shows no Git information. It never commits or pushes, and it never writes decrypted values to a file.
 
