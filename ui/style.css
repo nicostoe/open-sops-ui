@@ -88,6 +88,15 @@ aside { background: var(--side); border-right: 1px solid var(--line); padding: 1
 .pill.chg-added { background: var(--ok-bg); color: var(--ok); } .pill.chg-changed { background: var(--warn-bg); color: var(--warn); }
 .pill.chg-removed { background: var(--bad-bg); color: var(--bad); }
 .recent .file span { direction: rtl; text-align: left; }
+/* Shown only when a newer release exists. */
+.btn.icon.update { color: var(--accent); position: relative; }
+.btn.icon.update::after { content: ""; position: absolute; top: 4px; right: 4px; width: 7px; height: 7px;
+  border-radius: 50%; background: var(--accent); }
+.notes { border: 1px solid var(--line); border-radius: 9px; padding: 2px 14px 10px; margin-top: 10px; }
+.notes h4 { margin: 12px 0 4px; font-size: 13px; }
+.notes ul { margin: 0; padding-left: 18px; }
+.notes li { margin: 2px 0; overflow-wrap: anywhere; }
+.check.setting { padding: 4px 0; }
 .sidehead { display: flex; align-items: center; justify-content: space-between; padding: 0 0 4px 8px; }
 .sidehead .btn.icon { width: 26px; height: 26px; }
 .spin svg { animation: spin .7s linear infinite; }

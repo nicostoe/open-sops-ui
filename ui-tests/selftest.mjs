@@ -26,6 +26,10 @@ mkdirSync(out, { recursive: true });
 // Empty it instead of removing it: the folder may be a mount point.
 for (const entry of readdirSync(out)) rmSync(join(out, entry), { recursive: true, force: true });
 
+// The release list the app sees instead of GitHub's. Empty to start with, so
+// the screenshots show no update notice; ui/selftest.js fills it for its step.
+writeFileSync(join(out, "releases.json"), "[]");
+
 // A small, realistic project: the screenshots double as the README's pictures.
 const ORIGINAL = [
   "DATABASE_URL=postgres://shop:s3cr3t-pw@db.internal:5432/shop",
@@ -36,7 +40,7 @@ const ORIGINAL = [
   "",
 ].join("\n");
 const EXPECTED = ORIGINAL.replace("sk_test_1", "sk_test_changed") + "SENTRY_DSN=https://abc123@sentry.example/42\n";
-const EXPECTED_SHOTS = 18;
+const EXPECTED_SHOTS = 19;
 const TIMEOUT_MS = 180_000;
 
 // OPEN_SOPS_UI_SELFTEST_ROOT pins the folder, so screenshots show a tidy path

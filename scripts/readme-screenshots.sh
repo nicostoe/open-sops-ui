@@ -29,6 +29,6 @@ docker run --rm -v "$root":/src:ro -v "$deb":/pkg/app.deb:ro -v "$out":/out -w /
 
 mkdir -p "$root/docs/screenshots"
 cp "$out/07-unsaved-changes.png" "$root/docs/screenshots/editor-light.png"
-cp "$out/18-dark-changes.png" "$root/docs/screenshots/changes-dark.png"
+cp "$out/19-dark-changes.png" "$root/docs/screenshots/changes-dark.png"
 if [ -n "${2:-}" ]; then mkdir -p "$2" && cp "$out"/*.png "$2"/; fi
 echo "readme-screenshots: updated docs/screenshots/"

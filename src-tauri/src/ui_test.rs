@@ -92,6 +92,15 @@ fn commit(file: &Path) -> bool {
     git(&["add", "--", &name]) && git(&["commit", "-q", "-m", "Encrypt the env file", "--", &name])
 }
 
+/// In test mode, notes which release page would open instead of starting a
+/// browser on the CI runner. Returns false outside test mode.
+pub fn record_opened_release(tag: &str) -> bool {
+    match output_dir() {
+        Some(dir) => std::fs::write(dir.join("opened-release.txt"), tag).is_ok(),
+        None => false,
+    }
+}
+
 #[tauri::command(async)]
 pub fn ui_test(app: tauri::AppHandle, action: String, body: Value) -> Result<Value, String> {
     let Some(dir) = output_dir() else {
@@ -99,6 +108,22 @@ pub fn ui_test(app: tauri::AppHandle, action: String, body: Value) -> Result<Val
     };
     match action.as_str() {
         "config" => Ok(json!({ "enabled": true })),
+        // A fixed release list instead of asking GitHub, written by ui-tests/selftest.mjs,
+        // or an object asking the page to simulate a failure ({"simulate": "error" | "hang"}).
+        "releases" => {
+            let text =
+                std::fs::read_to_string(dir.join("releases.json")).map_err(|e| e.to_string())?;
+            serde_json::from_str(&text).map_err(|e| e.to_string())
+        }
+        "setReleases" => {
+            let text = serde_json::to_string(&body["releases"]).unwrap_or_else(|_| "[]".into());
+            Ok(json!(std::fs::write(dir.join("releases.json"), text).is_ok()))
+        }
+        // Which release page the app would have opened; see `record_opened_release`.
+        "openedRelease" => Ok(json!(std::fs::read_to_string(
+            dir.join("opened-release.txt")
+        )
+        .ok())),
         "shot" => {
             let name: String = body["name"]
                 .as_str()

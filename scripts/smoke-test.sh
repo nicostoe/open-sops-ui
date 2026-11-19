@@ -19,7 +19,13 @@ check() { # <label> <command...>
     cat "$report" >&2
     exit 1
   fi
-  echo "smoke-test: $label: ok ($(grep '"version"' "$report" | tr -d ' ,'))"
+  # The installed app must report the version this build was made for.
+  if [ -n "${OPEN_SOPS_UI_VERSION:-}" ] && ! grep -q "\"appVersion\": \"$OPEN_SOPS_UI_VERSION\"" "$report"; then
+    echo "smoke-test: $label: expected app version $OPEN_SOPS_UI_VERSION:" >&2
+    cat "$report" >&2
+    exit 1
+  fi
+  echo "smoke-test: $label: ok ($(grep -E '"(appVersion|version)"' "$report" | tr -d ' ,' | tr '\n' ' '))"
 }
 
 first() { ls "$@" 2>/dev/null | head -n 1; }

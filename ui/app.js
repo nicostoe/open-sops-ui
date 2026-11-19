@@ -17,6 +17,7 @@ const ICONS = {
   file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
   x: '<path d="M6 6l12 12M18 6L6 18"/>',
   refresh: '<path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/>',
+  upgrade: '<circle cx="12" cy="12" r="9"/><path d="M12 16.5v-9M8 11l4-4 4 4"/>',
   gear: '<path d="M4 7h9M19 7h1M4 17h1M11 17h9"/><circle cx="16" cy="7" r="2.5"/><circle cx="8" cy="17" r="2.5"/>',
   branch: '<circle cx="6" cy="5" r="2.5"/><circle cx="6" cy="19" r="2.5"/><circle cx="18" cy="8" r="2.5"/><path d="M6 7.5v9M18 10.5c0 5-12 2-12 6"/>',
   up: '<path d="M12 19V5M6 11l6-6 6 6"/>',
@@ -82,6 +83,7 @@ function setState(s) {
     : `sops wasn't found. Install it${brew} ${from}` +
       (S.appDir ? `, or put the sops binary in <span class="mono">${esc(S.appDir)}</span>` : "") + `. Then restart this app.`;
   renderFiles();
+  renderUpdate();
 }
 function isDirty() {
   return cur && JSON.stringify(cur.items) !== cur.orig;
@@ -336,6 +338,105 @@ function conflictDialog(recipients) {
   };
 }
 
+// ---- update notice ---------------------------------------------------------
+// Asks GitHub for the release list on start and once a day while the app is
+// open. The backend decides what is worth announcing (pick_update): stable
+// installs hear only about stable releases, pre-releases also about newer
+// pre-releases. Nothing is downloaded; the notice links to the release page.
+let UPDATE = null;
+const DAY = 24 * 60 * 60 * 1000;
+// A network that takes the request but never answers mustn't leave a check
+// hanging: after this long it counts as failed.
+const UPDATE_TIMEOUT_MS = 10_000;
+
+async function releaseFeed() {
+  // The UI self-test supplies a fixed list instead of asking GitHub, or asks
+  // for a failure ({simulate: "error" | "hang"}) to test what follows.
+  const fixture = await T.core.invoke("ui_test", { action: "releases", body: {} }).catch(() => null);
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), fixture?.timeoutMs ?? UPDATE_TIMEOUT_MS);
+  try {
+    if (fixture?.simulate === "error") throw new Error("simulated network error");
+    if (fixture?.simulate === "hang") {
+      await new Promise((_, reject) => ctl.signal.addEventListener("abort", () => reject(new Error("timed out"))));
+    }
+    if (fixture) return fixture;
+    const res = await fetch("https://api.github.com/repos/nicostoe/open-sops-ui/releases?per_page=30", {
+      headers: { Accept: "application/vnd.github+json" },
+      signal: ctl.signal,
+    });
+    if (!res.ok) throw new Error(`GitHub answered ${res.status}`);
+    return await res.json(); // also under the time limit: a slow body counts too
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// One check at a time; asking again while one runs waits for that one.
+let checking = null;
+function checkForUpdate(manual = false) {
+  if (!manual && !S.settings.checkUpdates) return Promise.resolve();
+  if (checking) return checking.then(() => manual && reportCheck());
+  checking = (async () => {
+    try {
+      UPDATE = (await api("pickUpdate", { releases: await releaseFeed() })).update;
+      lastCheckFailed = false;
+      renderUpdate();
+    } catch {
+      // Offline, rate-limited, timed out or a strange answer. The app keeps
+      // working, a notice already shown stays, and nothing is said unless asked.
+      lastCheckFailed = true;
+    } finally {
+      checking = null;
+    }
+    if (manual) reportCheck();
+  })();
+  return checking;
+}
+let lastCheckFailed = false;
+function reportCheck() {
+  if (lastCheckFailed) toast("Couldn't reach GitHub to check for updates. Try again later.", true);
+  else toast(UPDATE ? `Version ${UPDATE.version} is available` : "You have the newest version");
+}
+
+function renderUpdate() {
+  const b = $("#updateBtn"), on = !!UPDATE && S.settings.checkUpdates;
+  b.hidden = !on;
+  if (on) b.title = b.ariaLabel = `Version ${UPDATE.version} is available`;
+}
+
+// Release notes are Markdown; show a safe subset: headings, list items, plain text.
+function notesHtml(md) {
+  const inline = (t) => esc(t.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/\*\*/g, "").replace(/`/g, "")).trim();
+  let html = "", inList = false;
+  for (const raw of md.split(/\r?\n/).slice(0, 80)) {
+    const line = raw.trim();
+    const item = line.match(/^[-*] (.*)/);
+    if (item) { if (!inList) { html += "<ul>"; inList = true; } html += `<li>${inline(item[1])}</li>`; continue; }
+    if (inList) { html += "</ul>"; inList = false; }
+    const head = line.match(/^#{1,6} (.*)/);
+    if (head) html += `<h4>${inline(head[1])}</h4>`;
+    else if (line) html += `<p class="small">${inline(line)}</p>`;
+  }
+  return html + (inList ? "</ul>" : "");
+}
+
+function updateDialog() {
+  if (!UPDATE) return;
+  const dlg = $("#dlg"), u = UPDATE;
+  show(dlg, "Update available", `
+    <p>Open SOPS UI <strong>${esc(u.version)}</strong> is available. You have ${esc(S.version)}.</p>
+    ${u.prerelease ? `<p class="muted small">This is a pre-release.</p>` : ""}
+    ${u.notes.trim() ? `<div class="notes">${notesHtml(u.notes)}</div>` : ""}
+    <div class="formrow" style="justify-content:flex-end"><button class="btn" id="updLater">Not now</button>
+      <button class="btn primary" id="updOpen">${ic("upgrade")}Open release page</button></div>`);
+  $("#updLater", dlg).onclick = () => dlg.close();
+  $("#updOpen", dlg).onclick = async () => {
+    try { await T.core.invoke("open_release_page", { tag: u.tag }); dlg.close(); }
+    catch (e) { toast(typeof e === "string" ? e : "Couldn't open the browser.", true); }
+  };
+}
+
 function settingsDialog() {
   const dlg = $("#dlg"), now = S.settings.clipboardClearSeconds;
   const choices = [15, 30, 60, 120, 300, 0];
@@ -349,8 +450,22 @@ function settingsDialog() {
     <h3>Clipboard</h3>
     <div class="formrow" style="align-items:center"><label for="clipSel" style="flex:1">Clear copied values after</label>
       <select id="clipSel">${choices.map((s) => `<option value="${s}" ${s === now ? "selected" : ""}>${s ? duration(s) : "Never"}</option>`).join("")}</select></div>
-    <p class="muted small">Applies to variable values, not to public keys. Clipboard history tools may keep their own copy.</p>`);
+    <p class="muted small">Applies to variable values, not to public keys. Clipboard history tools may keep their own copy.</p>
+    <h3>Updates</h3>
+    <label class="check setting"><input type="checkbox" id="updChk" ${S.settings.checkUpdates ? "checked" : ""}>
+      <span>Look for a new version on start and once a day</span></label>
+    <div class="formrow" style="align-items:center"><span class="muted small" style="flex:1">Version ${esc(S.version)}</span>
+      <button class="btn sm" id="updNow">Check now</button></div>
+    <p class="muted small">Asks GitHub for the list of releases. Nothing is downloaded or installed.</p>`);
   $("#themeSel", dlg).onchange = (e) => setTheme(e.target.value);
+  $("#updChk", dlg).onchange = async (e) => {
+    try {
+      setState(await api("setSettings", { checkUpdates: e.target.checked }));
+      if (e.target.checked) checkForUpdate();
+      toast("Setting saved");
+    } catch (err) { fail(err); }
+  };
+  $("#updNow", dlg).onclick = () => checkForUpdate(true);
   $("#clipSel", dlg).onchange = async (e) => {
     try { setState(await api("setSettings", { clipboardClearSeconds: +e.target.value })); toast("Setting saved"); } catch (err) { fail(err); }
   };
@@ -589,6 +704,8 @@ function ask(message, okLabel) {
   });
 }
 
+$("#updateBtn").innerHTML = ic("upgrade");
+$("#updateBtn").onclick = updateDialog;
 $("#settingsBtn").innerHTML = ic("gear");
 $("#settingsBtn").onclick = settingsDialog;
 $("#keysBtn").onclick = keysDialog;
@@ -625,7 +742,11 @@ $("#refreshBtn").onclick = () => refresh(true);
 window.addEventListener("focus", refreshOnFocus);
 try { T.window.getCurrentWindow().onFocusChanged(({ payload }) => { if (payload) refreshOnFocus(); }); } catch { /* the window event above covers it */ }
 
-api("state").then((s) => { setState(s); renderEditor(); }).catch(fail);
+api("state").then((s) => {
+  setState(s); renderEditor();
+  checkForUpdate();
+  setInterval(() => checkForUpdate(), DAY);
+}).catch(fail);
 
 // Scripted self-test: loaded only when the app was started with OPEN_SOPS_UI_SELFTEST set.
 T.core.invoke("ui_test", { action: "config", body: {} }).then((on) => {
