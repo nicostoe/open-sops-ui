@@ -3146,7 +3146,7 @@ dependencies = [
 
 [[package]]
 name = "open-sops-ui"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "open-sops-ui-core",
  "serde_json",
@@ -3159,7 +3159,7 @@ dependencies = [
 
 [[package]]
 name = "open-sops-ui-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "age",
  "regex",
