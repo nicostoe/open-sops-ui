@@ -57,18 +57,19 @@ npm run build
 
 ## Commit messages
 
-Release notes are generated from commit subjects (`cliff.toml`), so every commit uses [Conventional Commits](https://www.conventionalcommits.org): `type(scope): description`, imperative, lower case after the colon. The type decides where it shows up:
+Release notes are generated from commit subjects (`cliff.toml`). Only changes someone using the app notices get a prefix, following [Conventional Commits](https://www.conventionalcommits.org), whose standard defines just these two types:
 
-| Type | Section in the release notes |
+| Subject | Section in the release notes |
 | --- | --- |
-| `feat` | Features |
-| `fix` | Bug fixes |
-| `fix(security)`, `feat(security)` | Security |
-| `perf` | Performance |
-| `…(deps)` | Dependencies (Renovate writes these) |
-| `docs`, `test`, `ci`, `build`, `chore`, `refactor`, `style` | left out |
+| `feat: …` | Features |
+| `fix: …` | Bug fixes (security fixes too) |
+| `[renovate] …` | Dependencies (Renovate writes these) |
+| anything else | left out |
 
-Write the description for someone using the app ("fix: keep the scroll position after saving"), not about the code. Mark a breaking change with `!` (`feat!: …`). A commit that doesn't follow the format still appears, under "Other changes". Preview the notes with `scripts/release-notes.sh` (needs `cargo install git-cliff --locked`).
+- Internal work (CI, tests, docs, refactoring, tooling) has no prefix and stays out of the notes. Don't invent other types such as `ci:` or `chore:`.
+- Write the description for someone using the app ("fix: keep the scroll position after saving"), not about the code. Mark a breaking change with `!` (`feat!: …`). A scope is allowed (`fix(security): …`) and still counts as a fix.
+- A user-visible change without `feat:` or `fix:` silently disappears from the notes, so check the prefix before committing.
+- Preview the notes with `scripts/release-notes.sh` (needs `cargo install git-cliff --locked`).
 
 ## Rules
 
