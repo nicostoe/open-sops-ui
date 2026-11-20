@@ -67,6 +67,66 @@ function setTheme(name) {
 media.addEventListener("change", applyTheme);
 applyTheme();
 
+// ---- file list width -------------------------------------------------------
+// The file list's right edge can be dragged (or moved with the arrow keys
+// while focused); double-click resets it. The width is a per-machine
+// convenience, so it lives in localStorage like the theme.
+const SIDE_DEFAULT = 250, SIDE_MIN = 160, SIDE_MAX = 600;
+// Leave the editor room to work, however narrow the window gets.
+const sideMax = () => Math.max(SIDE_MIN, Math.min(SIDE_MAX, innerWidth - 360));
+const clampSide = (w) => Math.round(Math.min(sideMax(), Math.max(SIDE_MIN, w)));
+function sideWidth() {
+  try { return Number(localStorage.getItem("sideWidth")) || SIDE_DEFAULT; } catch { return SIDE_DEFAULT; }
+}
+function applySideWidth(w = sideWidth()) {
+  const px = clampSide(w), r = $("#resizer");
+  document.documentElement.style.setProperty("--side-w", `${px}px`);
+  r.setAttribute("aria-valuemin", SIDE_MIN);
+  r.setAttribute("aria-valuemax", sideMax());
+  r.setAttribute("aria-valuenow", px);
+  return px;
+}
+function setSideWidth(w) {
+  const px = applySideWidth(w);
+  try {
+    if (px === SIDE_DEFAULT) localStorage.removeItem("sideWidth");
+    else localStorage.setItem("sideWidth", String(px));
+  } catch { /* applies until the app closes */ }
+}
+{
+  const r = $("#resizer");
+  let start = null; // { x, w } while dragging
+  r.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    start = { x: e.clientX, w: $("aside").getBoundingClientRect().width };
+    try { r.setPointerCapture(e.pointerId); } catch { /* the window listeners below still follow */ }
+    document.body.classList.add("resizing");
+  });
+  window.addEventListener("pointermove", (e) => {
+    if (start) applySideWidth(start.w + e.clientX - start.x);
+  });
+  const end = () => {
+    if (!start) return;
+    start = null;
+    document.body.classList.remove("resizing");
+    setSideWidth(parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--side-w")));
+  };
+  window.addEventListener("pointerup", end);
+  window.addEventListener("pointercancel", end);
+  r.addEventListener("dblclick", () => setSideWidth(SIDE_DEFAULT));
+  r.addEventListener("keydown", (e) => {
+    const step = e.shiftKey ? 64 : 16, now = $("aside").getBoundingClientRect().width;
+    const to = { ArrowLeft: now - step, ArrowRight: now + step, Home: SIDE_MIN, End: sideMax() }[e.key];
+    if (to === undefined) return;
+    e.preventDefault();
+    setSideWidth(to);
+  });
+  // A smaller window narrows the list for now; the saved width comes back when there's room.
+  window.addEventListener("resize", () => applySideWidth());
+  applySideWidth();
+}
+
 // ---- main view -----------------------------------------------------------
 function setState(s) {
   S = s;

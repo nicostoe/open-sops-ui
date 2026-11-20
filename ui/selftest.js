@@ -67,6 +67,31 @@
     check(q("#keysDot").className === "dot", "a missing key is flagged");
     await shot("01-start-without-key");
 
+    // The file list's width follows its drag handle, stays within limits and is remembered.
+    const resizer = q("#resizer"), sideW = () => Math.round(q("aside").getBoundingClientRect().width);
+    const drag = (dx) => {
+      const x = resizer.getBoundingClientRect().left + 3;
+      resizer.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, clientX: x, pointerId: 7 }));
+      window.dispatchEvent(new PointerEvent("pointermove", { clientX: x + dx, pointerId: 7 }));
+      window.dispatchEvent(new PointerEvent("pointerup", { clientX: x + dx, pointerId: 7 }));
+    };
+    resizer.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); // a width left by an earlier run
+    const before = sideW();
+    check(before === 250, "the file list starts at its default width");
+    drag(120);
+    check(sideW() === before + 120, "dragging the handle widens the file list");
+    check(localStorage.getItem("sideWidth") === String(before + 120), "the chosen width is remembered");
+    check(Math.round(resizer.getBoundingClientRect().left + 3) === Math.round(q("aside").getBoundingClientRect().right), "the handle follows the list's edge");
+    drag(-2000);
+    check(sideW() === 160, "the file list can't be dragged narrower than its minimum");
+    drag(5000);
+    check(sideW() <= 600 && q("#editor").getBoundingClientRect().width >= 360, "a wide file list leaves the editor room");
+    resizer.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true }));
+    resizer.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    check(sideW() === 176, "the arrow keys move the handle");
+    resizer.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    check(sideW() === 250 && localStorage.getItem("sideWidth") === null, "double-clicking the handle restores the default width");
+
     await click("#keysBtn");
     await click("#dlg [data-f=new]");
     await until("the create-key form", () => q("#dlg #kp"));
