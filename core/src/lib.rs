@@ -965,6 +965,10 @@ pub struct App {
     next_id: u32,
     /// The version of this build, shown in the app and compared with releases.
     version: String,
+    /// A key pair created for a server or CI, waiting for its private key to be
+    /// copied (`machine_key_secret`). Held in memory only; dropped once the
+    /// public key is saved as a recipient or the user discards it.
+    machine_key: Option<(String, Identity)>,
 }
 
 impl App {
@@ -991,10 +995,17 @@ impl App {
             bundled_dirs,
             next_id: 0,
             version: env!("CARGO_PKG_VERSION").to_string(),
+            machine_key: None,
         };
         app.remember_folder();
         app.reload_keys();
         app
+    }
+
+    /// The private key of the key pair made with `machineKeyCreate`, for the
+    /// desktop shell to put on the clipboard. It never goes to the page.
+    pub fn machine_key_secret(&self) -> Option<String> {
+        self.machine_key.as_ref().map(|(_, id)| id.secret.clone())
     }
 
     /// Seconds after which a copied value is removed from the clipboard; 0 keeps it.
@@ -1773,6 +1784,43 @@ impl App {
                 self.config.book.retain(|b| b.key != key);
                 self.config.book.push(BookEntry { name, key });
                 self.save_config()?;
+                Ok(self.state())
+            }
+
+            // A key pair for a server or CI: the public key becomes a saved
+            // recipient, the private key is copied once (through the shell's
+            // `copy`) into that machine's secret store and then forgotten.
+            "machineKeyCreate" => {
+                let name = text("name").trim().to_string();
+                if name.is_empty() {
+                    return Err("Enter a name for the server or CI.".into());
+                }
+                let fresh = age::x25519::Identity::generate();
+                let identity = Identity {
+                    secret: fresh.to_string().expose_secret().to_string(),
+                    public: fresh.to_public().to_string(),
+                };
+                let public = identity.public.clone();
+                self.machine_key = Some((name.clone(), identity));
+                Ok(json!({ "name": name, "pub": public }))
+            }
+
+            "machineKeyFinish" => {
+                let (name, identity) = self
+                    .machine_key
+                    .take()
+                    .ok_or("That key is gone. Create a new one.")?;
+                self.config.book.retain(|b| b.key != identity.public);
+                self.config.book.push(BookEntry {
+                    name,
+                    key: identity.public,
+                });
+                self.save_config()?;
+                Ok(self.state())
+            }
+
+            "machineKeyDiscard" => {
+                self.machine_key = None;
                 Ok(self.state())
             }
 

@@ -35,6 +35,8 @@ svg { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; s
 .btn.ghost:hover { color: var(--text); }
 .btn.primary { background: var(--primary); color: var(--on-primary); border-color: transparent; }
 .btn.primary:hover { opacity: .88; }
+.btn:disabled, .btn:disabled:hover { opacity: .45; cursor: default; background: transparent; }
+.btn.primary:disabled { background: var(--primary); }
 .btn.sm { height: 26px; padding: 0 8px; font-size: 12.5px; }
 .btn.icon { width: 28px; height: 28px; padding: 0; justify-content: center; border-color: transparent; color: var(--muted); }
 .btn.icon:hover { color: var(--text); }
@@ -124,6 +126,8 @@ section#editor { padding: 20px 24px; overflow: auto; }
 .empty svg { width: 28px; height: 28px; color: var(--muted); }
 .note { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 7px; margin-bottom: 14px; }
 .note.warn { background: var(--warn-bg); color: var(--warn); }
+.note.ok { background: var(--ok-bg); color: var(--ok); }
+.secretmask { color: var(--text2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .note .btn { margin-left: auto; border-color: currentColor; }
 .filehead { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }
 .filehead .name { font-weight: 600; font-size: 14px; }

@@ -541,13 +541,19 @@ function settingsDialog() {
 }
 
 // ---- dialogs -------------------------------------------------------------
+// A view that must not close by accident sets dlg.onleave after show(); the
+// close button, the backdrop and Escape then call it instead of closing.
 function show(dlg, title, html) {
+  dlg.onleave = null;
   dlg.innerHTML = `<div class="dhead"><span>${title}</span><span class="spacer"></span>
     <button class="btn icon" data-close aria-label="Close">${ic("x")}</button></div><div class="dbody">${html}</div>`;
-  dlg.querySelector("[data-close]").onclick = () => dlg.close();
+  dlg.querySelector("[data-close]").onclick = () => (dlg.onleave ? dlg.onleave() : dlg.close());
   if (!dlg.open) dlg.showModal();
 }
-document.querySelectorAll("dialog").forEach((d) => d.addEventListener("click", (e) => { if (e.target === d) d.close(); }));
+document.querySelectorAll("dialog").forEach((d) => {
+  d.addEventListener("click", (e) => { if (e.target === d) d.onleave ? d.onleave() : d.close(); });
+  d.addEventListener("cancel", (e) => { if (d.onleave) { e.preventDefault(); d.onleave(); } });
+});
 
 // What changed in the open file since the last commit, by variable. Values
 // stay hidden until asked for.
@@ -733,7 +739,9 @@ function recipientsDialog() {
     <h3>Saved recipients</h3>
     ${book || `<div class="muted small" style="padding:6px 0">Save a teammate's or server's public key here to pick it by name.</div>`}
     <div class="formrow"><input type="text" id="bn" placeholder="Name" style="flex:0 1 130px" aria-label="Name">
-      <input type="text" id="bk" class="mono" placeholder="age1…" spellcheck="false" aria-label="Public key"><button class="btn" id="badd">Save</button></div>`);
+      <input type="text" id="bk" class="mono" placeholder="age1…" spellcheck="false" aria-label="Public key"><button class="btn" id="badd">Save</button></div>
+    <div class="formrow"><button class="btn" id="machineNew">${ic("plus")}Create new key pair</button></div>`);
+  $("#machineNew", dlg).onclick = machineKeyDialog;
   const setRec = async (list, msg) => {
     if (isDirty()) return toast("Save or discard your changes first.", true);
     try {
@@ -750,6 +758,78 @@ function recipientsDialog() {
   if ($("#apply", dlg)) $("#apply", dlg).onclick = () => act("applyRule", { path: cur.path }, recipientsDialog, "File updated");
   dlg.querySelectorAll("[data-rm]").forEach((b) => (b.onclick = () => act("bookRemove", { key: b.dataset.rm }, recipientsDialog)));
   $("#badd", dlg).onclick = () => act("bookAdd", { name: $("#bn", dlg).value, key: $("#bk", dlg).value }, recipientsDialog, "Recipient saved");
+}
+
+// A new key pair for somewhere else that runs sops: a server, a pipeline, a
+// colleague's container. The name is the user's; the app makes no assumption
+// about where the key is used. The backend keeps the private
+// key in memory; it goes from there straight to the clipboard and never
+// reaches this page. Once copied (or discarded) it's forgotten, and the public
+// key becomes a saved recipient.
+let machinePending = null; // { copied } while a created key waits
+function machineKeyDialog() {
+  const dlg = $("#dlg");
+  show(dlg, "New key pair", `<p class="muted small">Creates a key pair for another place that decrypts with sops. The public key is
+    saved as a recipient. You copy the private key once to where it's needed; this app doesn't keep it.</p>
+    <div class="formrow"><input type="text" id="mn" placeholder="Name, like production server" style="flex:1" aria-label="Name">
+      <button class="btn primary" id="mc">${ic("key")}Create key</button></div>
+    <div class="formrow" style="justify-content:flex-end"><button class="btn" id="mback">Back</button></div>`);
+  $("#mn", dlg).focus();
+  $("#mback", dlg).onclick = recipientsDialog;
+  const create = async () => {
+    try { machineKeyCreated(await api("machineKeyCreate", { name: $("#mn", dlg).value })); } catch (e) { fail(e); }
+  };
+  $("#mc", dlg).onclick = create;
+  $("#mn", dlg).onkeydown = (e) => { if (e.key === "Enter") create(); };
+}
+function machineKeyCreated(made) {
+  const dlg = $("#dlg");
+  machinePending = { copied: false };
+  const finish = async () => {
+    try {
+      const state = await api("machineKeyFinish");
+      machinePending = null; await refreshAfter(state); recipientsDialog(); toast("Recipient saved");
+    } catch (e) { fail(e); }
+  };
+  const discard = async () => {
+    try { await api("machineKeyDiscard"); } catch { /* it's gone either way */ }
+    machinePending = null; recipientsDialog();
+  };
+  // The close button, the backdrop and Escape: a copied key is saved, since
+  // its private key may already be in use; an uncopied one is discarded on request.
+  const leave = async () => {
+    if (machinePending.copied) return finish();
+    if (await ask("You haven't copied the private key. Without it, nothing encrypted for this key can be decrypted.\n\nDiscard the key?", "Discard")) discard();
+  };
+  const render = () => {
+    const copied = machinePending.copied;
+    show(dlg, "New key pair", `<div class="formrow" style="margin:6px 0 12px"><span class="muted">Name</span><strong id="mname">${esc(made.name)}</strong></div>
+      <div class="note ${copied ? "ok" : "warn"}" id="mstate">${ic(copied ? "lock" : "alert")}<span>${copied
+      ? "Private key copied. Store it now: it's gone once you close this dialog."
+      : "Copy the private key now. It's shown only here, and the app forgets it when you close this dialog."}</span></div>
+      <h3>Private key</h3>
+      <div class="formrow" style="align-items:center;margin-top:0"><span class="mono secretmask" style="flex:1">AGE-SECRET-KEY-1••••••••••••••••</span>
+        <button class="btn ${copied ? "" : "primary"}" id="mcopy">${ic("copy")}Copy private key</button></div>
+      <p class="muted small">Where sops runs, provide it as the <span class="mono">SOPS_AGE_KEY</span> environment variable or in a
+        <span class="mono">keys.txt</span> file.</p>
+      <h3>Public key</h3>
+      <div class="item" style="border:0;padding-top:0"><div class="sub"><span class="mono" id="mpub">${esc(made.pub)}</span>
+        <button class="btn icon" id="mpubcopy" title="Copy public key" aria-label="Copy public key">${ic("copy")}</button></div></div>
+      <div class="formrow" style="justify-content:flex-end"><button class="btn" id="mdiscard">Discard</button>
+        <button class="btn primary" id="mdone" ${copied ? "" : `disabled title="Copy the private key first"`}>Save recipient</button></div>`);
+    dlg.onleave = leave;
+    $("#mcopy", dlg).onclick = async () => {
+      try {
+        const seconds = await T.core.invoke("copy", { secret: true, machineKey: true });
+        machinePending.copied = true; render();
+        toast(seconds ? `Private key copied. The clipboard is cleared in ${duration(seconds)}.` : "Private key copied");
+      } catch (e) { toast(typeof e === "string" ? e : "Couldn't copy to the clipboard.", true); }
+    };
+    $("#mpubcopy", dlg).onclick = () => copy(made.pub, "Public key");
+    $("#mdone", dlg).onclick = finish;
+    $("#mdiscard", dlg).onclick = discard;
+  };
+  render();
 }
 
 // Native file and folder dialogs. Returns the chosen path, or null.
@@ -801,7 +881,9 @@ $("#folderBtn").onclick = async () => {
 // Ask before closing the window with unsaved edits.
 try {
   T.window.getCurrentWindow().onCloseRequested(async (event) => {
-    if (isDirty() && !(await ask("Close and discard unsaved changes?", "Discard"))) event.preventDefault();
+    if (isDirty() && !(await ask("Close and discard unsaved changes?", "Discard"))) return event.preventDefault();
+    if (machinePending && !machinePending.copied &&
+      !(await ask("You haven't copied the private key of the new key pair. Close and discard it?", "Discard"))) event.preventDefault();
   });
 } catch { /* closing simply won't ask */ }
 
