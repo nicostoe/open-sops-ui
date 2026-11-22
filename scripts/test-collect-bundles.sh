@@ -19,19 +19,23 @@ touch "$bundle/deb/Open SOPS UI_1.2.0_amd64.deb" \
       "$bundle/msi/Open SOPS UI_1.2.0_x64_en-US.msi" \
       "$bundle/nsis/Open SOPS UI_1.2.0_x64-setup.exe"
 
+# Every check also runs as bash 4.2 would, which like macOS's bash 3.2 keeps
+# quotes in a substitution's replacement.
 collect() { # <version> <out> [suffix]
-  OPEN_SOPS_UI_VERSION="$1" BUNDLE_DIR="$bundle" scripts/collect-bundles.sh test "$2" "${3:-}" >/dev/null
-  (cd "$2" && ls | sort)
+  rm -rf "$2"
+  BASH_COMPAT="${COMPAT:-}" OPEN_SOPS_UI_VERSION="$1" BUNDLE_DIR="$bundle" scripts/collect-bundles.sh test "$2" "${3:-}" >/dev/null
+  (cd "$2" && ls | LC_ALL=C sort)
 }
 expect() { # <what> <actual> <expected...>
   local what="$1" actual="$2"; shift 2
   if [ "$actual" != "$(printf '%s\n' "$@")" ]; then
-    echo "collect-bundles test failed: $what" >&2
+    echo "collect-bundles test failed: $what${COMPAT:+ (as bash $COMPAT)}" >&2
     echo "got:" >&2; printf '%s\n' "$actual" >&2
     exit 1
   fi
 }
 
+for COMPAT in "" 42; do
 expect "a pre-release carries its full version" "$(collect 1.2.0-beta.4 "$work/pre" -with-sops)" \
   "Open-SOPS-UI-1.2.0-0.beta.4.x86_64-with-sops.rpm" \
   "Open-SOPS-UI_1.2.0-beta.4_aarch64-with-sops.dmg" \
@@ -55,5 +59,7 @@ expect "without a version, names stay as Tauri made them" "$(collect "" "$work/p
   "Open-SOPS-UI_1.2.0_amd64.deb" \
   "Open-SOPS-UI_1.2.0_x64-setup.exe" \
   "Open-SOPS-UI_1.2.0_x64_en-US.msi"
+
+done
 
 echo "collect-bundles test passed"

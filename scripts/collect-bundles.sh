@@ -27,7 +27,10 @@ for file in "$src"/deb/*.deb "$src"/rpm/*.rpm "$src"/appimage/*.AppImage \
   base="$(basename "$file")"
   stem="${base%.*}"
   if [ "$version" != "$core" ]; then
-    stem="${stem/_"$core"_/_"$version"_}"
+    # Unquoted on purpose: bash 3.2 (macOS) keeps quotes in the replacement.
+    # A version holds only [0-9A-Za-z.-] (scripts/version.sh), nothing a
+    # pattern would treat specially.
+    stem="${stem/_${core}_/_${version}_}"
   fi
   cp "$file" "$out/${stem// /-}${suffix}.${base##*.}"
   count=$((count + 1))
