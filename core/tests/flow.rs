@@ -226,6 +226,77 @@ fn full_flow() {
     app.handle("bookAdd", &json!({ "name": "Anna", "key": b }))
         .unwrap();
 
+    // A key for a server or CI: only the public key reaches the page and the
+    // config; the private key stays in memory until it is copied.
+    assert!(app
+        .handle("machineKeyCreate", &json!({ "name": " " }))
+        .is_err());
+    let made = app
+        .handle("machineKeyCreate", &json!({ "name": "CI deploy" }))
+        .unwrap();
+    let ci = made["pub"].as_str().unwrap().to_string();
+    let secret = app.machine_key_secret().unwrap();
+    assert!(secret.starts_with("AGE-SECRET-KEY-1"));
+    assert!(!made.to_string().contains("AGE-SECRET-KEY"));
+    let parsed: age::x25519::Identity = secret.parse().unwrap();
+    assert_eq!(parsed.to_public().to_string(), ci);
+    let state = app.handle("machineKeyFinish", &json!({})).unwrap();
+    assert!(app.machine_key_secret().is_none());
+    assert!(!state.to_string().contains("AGE-SECRET-KEY"));
+    assert_eq!(state["book"][1]["name"], "CI deploy");
+    assert_eq!(state["book"][1]["key"], ci.as_str());
+    let config_dir = root.join("xdg/open-sops-ui");
+    for entry in std::fs::read_dir(&config_dir).unwrap() {
+        let text = std::fs::read_to_string(entry.unwrap().path()).unwrap_or_default();
+        assert!(
+            !text.contains("AGE-SECRET-KEY"),
+            "a private key reached the config"
+        );
+    }
+    assert!(app.handle("machineKeyFinish", &json!({})).is_err());
+    // A discarded key leaves no recipient behind.
+    app.handle("machineKeyCreate", &json!({ "name": "staging" }))
+        .unwrap();
+    let state = app.handle("machineKeyDiscard", &json!({})).unwrap();
+    assert!(app.machine_key_secret().is_none());
+    assert_eq!(state["book"].as_array().unwrap().len(), 2);
+    // The server decrypts a file encrypted for it with exactly the copied key.
+    let ci_file = app
+        .handle(
+            "create",
+            &json!({ "dir": demo.to_string_lossy(), "name": "ci.env",
+                     "items": [{ "t": "kv", "k": "DEPLOY", "v": "from-ci" }], "recipients": [a, ci] }),
+        )
+        .unwrap()["path"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let elsewhere = root.join("ci-machine");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let out = std::process::Command::new(state["sops"]["path"].as_str().unwrap())
+        .args([
+            "decrypt",
+            "--input-type",
+            "dotenv",
+            "--output-type",
+            "dotenv",
+            &ci_file,
+        ])
+        .current_dir(&elsewhere)
+        .env("XDG_CONFIG_HOME", &elsewhere)
+        .env("AppData", &elsewhere)
+        .env("HOME", &elsewhere)
+        .env("SOPS_AGE_KEY", &secret)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "DEPLOY=from-ci\n");
+    std::fs::remove_file(&ci_file).unwrap();
+
     // Fresh start with keys.txt removed: files are locked, opening explains why.
     std::fs::rename(&keys_txt, root.join("moved-keys.txt")).unwrap();
     let mut app = App::new(Some(demo.clone()), vec![]);

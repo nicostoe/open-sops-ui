@@ -50,14 +50,30 @@ const CLEARED_NOTE: &str = "(cleared by Open SOPS UI)";
 /// Copies text to the clipboard. The page has no clipboard access of its own;
 /// everything goes through here. A `secret` is removed again after the
 /// configured time. Returns that time in seconds, 0 if it stays.
+///
+/// With `machine_key` set, it copies the private key of the key pair made for a
+/// server or CI instead of `text`: that key goes from the backend straight to
+/// the clipboard and never passes through the page.
 #[tauri::command(async)]
 fn copy(
     app: tauri::AppHandle,
     shared: tauri::State<'_, Shared>,
     clipboard: tauri::State<'_, Clipboard>,
-    text: String,
+    text: Option<String>,
     secret: bool,
+    machine_key: Option<bool>,
 ) -> Result<u32, String> {
+    let text = if machine_key == Some(true) {
+        shared
+            .0
+            .lock()
+            .map_err(|_| "The app hit an internal error. Restart it.".to_string())?
+            .machine_key_secret()
+            .ok_or("That key is gone. Create a new one.")?
+    } else {
+        text.ok_or("Nothing to copy.")?
+    };
+    let secret = secret || machine_key == Some(true);
     let failed = |_| "Couldn't copy to the clipboard.".to_string();
     app.clipboard().write_text(text.clone()).map_err(failed)?;
     let seconds = if secret {

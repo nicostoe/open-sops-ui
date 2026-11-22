@@ -23,6 +23,8 @@ Decrypted values are held in memory only. The only network request the app makes
 - Reads plaintext files in UTF-8, UTF-16 and Windows-1252; encrypted files are always written as UTF-8.
 - Loads age keys from the default location, from any number of custom key files, or pasted for the session only. A pasted or newly created key can be saved to the default location.
 - Manages who can decrypt a file, with a saved list of named public keys.
+- Creates key pairs for other places that decrypt with sops, such as a server or a pipeline: the public key is saved as a recipient, and the private key is copied to the clipboard once and never stored by the app.
+- The file list can be dragged wider for long file names; double-click its edge to reset it.
 - Warns when a file's recipients differ from the matching `.sops.yaml` rule.
 - Light and dark mode, following the system by default.
 

@@ -67,6 +67,31 @@
     check(q("#keysDot").className === "dot", "a missing key is flagged");
     await shot("01-start-without-key");
 
+    // The file list's width follows its drag handle, stays within limits and is remembered.
+    const resizer = q("#resizer"), sideW = () => Math.round(q("aside").getBoundingClientRect().width);
+    const drag = (dx) => {
+      const x = resizer.getBoundingClientRect().left + 3;
+      resizer.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, clientX: x, pointerId: 7 }));
+      window.dispatchEvent(new PointerEvent("pointermove", { clientX: x + dx, pointerId: 7 }));
+      window.dispatchEvent(new PointerEvent("pointerup", { clientX: x + dx, pointerId: 7 }));
+    };
+    resizer.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); // a width left by an earlier run
+    const before = sideW();
+    check(before === 250, "the file list starts at its default width");
+    drag(120);
+    check(sideW() === before + 120, "dragging the handle widens the file list");
+    check(localStorage.getItem("sideWidth") === String(before + 120), "the chosen width is remembered");
+    check(Math.round(resizer.getBoundingClientRect().left + 3) === Math.round(q("aside").getBoundingClientRect().right), "the handle follows the list's edge");
+    drag(-2000);
+    check(sideW() === 160, "the file list can't be dragged narrower than its minimum");
+    drag(5000);
+    check(sideW() <= 600 && q("#editor").getBoundingClientRect().width >= 360, "a wide file list leaves the editor room");
+    resizer.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true }));
+    resizer.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    check(sideW() === 176, "the arrow keys move the handle");
+    resizer.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    check(sideW() === 250 && localStorage.getItem("sideWidth") === null, "double-clicking the handle restores the default width");
+
     await click("#keysBtn");
     await click("#dlg [data-f=new]");
     await until("the create-key form", () => q("#dlg #kp"));
@@ -136,6 +161,61 @@
     await click("#recBtn");
     await shows("#dlg", "You (default)");
     await shot("10-recipients");
+
+    // A new key pair for somewhere else: the private key goes to the clipboard without
+    // ever being in the page, and the public key becomes a saved recipient.
+    const secretInPage = () => /AGE-SECRET-KEY-1[0-9A-Z]{8}/.test(document.documentElement.outerHTML);
+    await click("#machineNew");
+    await until("the server key form", () => q("#dlg[open] #mn"));
+    await click("#dlg #mc");
+    await until("the missing name message", () => text("#toast").includes("Enter a name"));
+    check(!q("#dlg #mcopy"), "a new key pair needs a name");
+    await type("#dlg #mn", "Production server");
+    await shot("10a-new-key-pair-name");
+    await click("#dlg #mc");
+    await until("the created key", () => q("#dlg[open] #mcopy"));
+    const ciPub = text("#mpub");
+    check(ciPub.startsWith("age1") && !secretInPage(), "only the public key of a new key pair is in the page");
+    check(q("#dlg .dhead").innerText.trim() === "New key pair" && text("#mname") === "Production server", "the dialog has a generic title and shows the chosen name");
+    check(q("#dlg #mdone").disabled, "the recipient can't be saved before the private key was copied");
+    await shot("10b-new-key-pair");
+    await click("#dlg [data-close]");
+    await until("the question about the uncopied key", () => q("#dlg2[open] #no") && text("#dlg2").includes("haven't copied"));
+    await click("#dlg2 #no");
+    check(q("#dlg").open && q("#dlg #mcopy"), "closing before the private key was copied asks, and No keeps the key");
+    await click("#dlg #mcopy");
+    await until("the copied state", () => q("#dlg[open] #mstate.ok"));
+    const ciSecret = await call("clipboard");
+    check(ciSecret.startsWith("AGE-SECRET-KEY-1") && !secretInPage(), "the private key is on the clipboard but not in the page");
+    const loaded = await api("addSessionKey", { content: ciSecret, label: "check" }); // test only: prove the pair belongs together
+    check(loaded.state.keys.some((k) => k.pubs.includes(ciPub)), "the copied private key belongs to the shown public key");
+    setState(await api("removeKey", { id: loaded.id }));
+    check(!q("#dlg #mdone").disabled, "after copying, the recipient can be saved");
+    await click("#dlg #mdone");
+    await until("the recipients again", () => q("#dlg[open] #machineNew"));
+    check(S.book.some((b) => b.name === "Production server" && b.key === ciPub) &&
+      [...document.querySelectorAll("#dlg .item")].some((i) => i.innerText.includes("Production server") && i.innerText.includes(ciPub)),
+      "Save recipient goes back to the recipients, with the new one listed");
+    // Discard goes straight back and saves nothing, copied or not.
+    await click("#machineNew");
+    await type("#dlg #mn", "staging");
+    await click("#dlg #mc");
+    await until("the second key", () => q("#dlg[open] #mcopy"));
+    await click("#dlg #mcopy");
+    await until("the copied state", () => q("#dlg[open] #mstate.ok"));
+    await click("#dlg #mdiscard");
+    await until("the recipients again", () => q("#dlg[open] #machineNew"));
+    check(!q("#dlg2").open && !S.book.some((b) => b.name === "staging"), "Discard goes back to the recipients without saving");
+    // Closing a key that was never copied, and confirming, saves nothing.
+    await click("#machineNew");
+    await type("#dlg #mn", "staging");
+    await click("#dlg #mc");
+    await until("the second key", () => q("#dlg[open] #mcopy"));
+    await click("#dlg [data-close]");
+    await until("the question", () => q("#dlg2[open] #yes"));
+    await click("#dlg2 #yes");
+    await until("the recipients again", () => q("#dlg[open] #machineNew"));
+    check(!S.book.some((b) => b.name === "staging"), "closing an uncopied key pair discards it");
     await click("#dlg [data-close]");
 
     // The other answer to a changed file: reload it and drop the local edit.

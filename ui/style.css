@@ -35,6 +35,8 @@ svg { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; s
 .btn.ghost:hover { color: var(--text); }
 .btn.primary { background: var(--primary); color: var(--on-primary); border-color: transparent; }
 .btn.primary:hover { opacity: .88; }
+.btn:disabled, .btn:disabled:hover { opacity: .45; cursor: default; background: transparent; }
+.btn.primary:disabled { background: var(--primary); }
 .btn.sm { height: 26px; padding: 0 8px; font-size: 12.5px; }
 .btn.icon { width: 28px; height: 28px; padding: 0; justify-content: center; border-color: transparent; color: var(--muted); }
 .btn.icon:hover { color: var(--text); }
@@ -50,7 +52,14 @@ header .spacer { flex: 1; }
 
 #banner { display: none; padding: 8px 14px; background: var(--bad-bg); color: var(--bad); border-bottom: 1px solid var(--line); }
 
-main { flex: 1; display: grid; grid-template-columns: 250px minmax(0, 1fr); min-height: 0; }
+main { flex: 1; display: grid; grid-template-columns: var(--side-w, 250px) minmax(0, 1fr); min-height: 0; position: relative; }
+/* Drag handle on the file list's right edge; positioned, so it takes no grid cell. */
+#resizer { position: absolute; top: 0; bottom: 0; left: calc(var(--side-w, 250px) - 3px); width: 6px; cursor: col-resize;
+  z-index: 2; touch-action: none; }
+#resizer::after { content: ""; position: absolute; top: 0; bottom: 0; left: 2px; width: 2px; background: transparent; transition: background .1s; }
+#resizer:hover::after, #resizer:focus-visible::after, body.resizing #resizer::after { background: var(--accent); }
+#resizer:focus-visible { outline: none; }
+body.resizing { cursor: col-resize; user-select: none; }
 aside { background: var(--side); border-right: 1px solid var(--line); padding: 10px 8px; overflow: auto; }
 .file { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 8px; border: 0; border-radius: 7px;
   background: transparent; cursor: pointer; text-align: left; }
@@ -117,6 +126,8 @@ section#editor { padding: 20px 24px; overflow: auto; }
 .empty svg { width: 28px; height: 28px; color: var(--muted); }
 .note { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 7px; margin-bottom: 14px; }
 .note.warn { background: var(--warn-bg); color: var(--warn); }
+.note.ok { background: var(--ok-bg); color: var(--ok); }
+.secretmask { color: var(--text2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .note .btn { margin-left: auto; border-color: currentColor; }
 .filehead { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }
 .filehead .name { font-weight: 600; font-size: 14px; }
@@ -170,6 +181,7 @@ dialog::backdrop { background: rgba(0,0,0,.4); }
 @media (max-width: 720px) {
   main { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
   aside { border-right: 0; border-bottom: 1px solid var(--line); max-height: 30vh; }
+  #resizer { display: none; }
   header .folder { display: none; }
   section#editor { padding: 14px; }
   .row { grid-template-columns: 4px minmax(0, 1fr) auto; }
