@@ -155,7 +155,7 @@ The backend tests also run the app's logic with Git unavailable. Not covered by 
 
 ## Keeping it up to date
 
-- **Renovate** (`renovate.json`) opens pull requests on Monday mornings. It keeps them rebased on `main`, so their checks always reflect the current code. Minor and patch updates come as one grouped pull request and merge themselves once CI is green; so does a new `sops` release, in its own pull request. Major updates wait for a manual merge.
+- **Renovate** (`renovate.json`) opens pull requests as soon as it finds an update, without waiting for approval on the Dependency Dashboard; lock file maintenance runs on Mondays. It keeps them rebased on `main`, so their checks always reflect the current code. Minor and patch updates come as one grouped pull request and merge themselves once CI is green; so does a new `sops` release, in its own pull request. Major updates wait for a manual merge.
 - **Audit** (`.github/workflows/audit.yml`) checks weekly for known vulnerabilities in the Rust and npm dependencies.
 - For auto-merge to be safe, protect `main` on GitHub and make the four `Build` jobs required checks.
 
