@@ -80,32 +80,38 @@ fn full_flow() {
         );
     }
 
-    // Plaintext file: needs recipients, then encrypts in place.
+    // A plaintext file isn't listed and isn't opened; files are created encrypted.
+    std::fs::write(demo.join("plain.env"), "SECRET=visible\n").unwrap();
+    assert_eq!(
+        status(&app.handle("state", &json!({})).unwrap(), "plain.env"),
+        "absent"
+    );
+    let err = app
+        .handle(
+            "addFile",
+            &json!({ "path": demo.join("plain.env").to_string_lossy() }),
+        )
+        .unwrap_err();
+    assert!(err.contains("isn't encrypted with SOPS"), "{err}");
     let file = demo.join(".env.prod.enc");
     let p = file.to_string_lossy().to_string();
-    std::fs::write(
-        &file,
-        "DB=postgres://u:p@h/db\n# payment\nSTRIPE=sk_1\nJWT=a=b\n",
-    )
-    .unwrap();
-    assert_eq!(
-        status(&app.handle("state", &json!({})).unwrap(), ".env.prod.enc"),
-        "plain"
-    );
-    let opened = app.handle("open", &json!({ "path": p })).unwrap();
-    assert_eq!(opened["encrypted"], false);
-    let items = opened["items"].clone();
-    let err = app
-        .handle("save", &json!({ "path": p, "items": items }))
-        .unwrap_err();
-    assert!(err.contains("recipient"), "{err}");
-    let saved = app
-        .handle(
-            "save",
-            &json!({ "path": p, "items": items, "recipients": [a] }),
+    let items = json!([
+        { "t": "kv", "k": "DB", "v": "postgres://u:p@h/db" },
+        { "t": "raw", "text": "# payment" },
+        { "t": "kv", "k": "STRIPE", "v": "sk_1" },
+        { "t": "kv", "k": "JWT", "v": "a=b" },
+    ]);
+    let new_file = |app: &mut App, name: &str, items: &Value, recipients: Value| {
+        app.handle(
+            "create",
+            &json!({ "dir": demo.to_string_lossy(), "name": name, "items": items, "recipients": recipients }),
         )
-        .unwrap();
-    assert_eq!(saved["file"]["encrypted"], true);
+    };
+    let err = new_file(&mut app, ".env.prod.enc", &items, json!([])).unwrap_err();
+    assert!(err.contains("recipient"), "{err}");
+    let saved = new_file(&mut app, ".env.prod.enc", &items, json!([a])).unwrap();
+    assert_eq!(saved["file"]["kind"], "env");
+    assert_eq!(saved["file"]["format"], "dotenv");
     assert_eq!(saved["file"]["items"], items);
     assert_eq!(saved["file"]["recipients"][0]["name"], "You (default)");
     assert_eq!(status(&saved["state"], ".env.prod.enc"), "ok");
@@ -174,23 +180,24 @@ fn full_flow() {
     assert!(f["drift"].is_null());
     assert_eq!(f["recipients"].as_array().unwrap().len(), 1);
 
-    // A plaintext file matched by a rule encrypts without choosing recipients.
-    let ruled = demo.join(".env.prod.new");
-    std::fs::write(&ruled, "Z=1\n").unwrap();
-    let rp = ruled.to_string_lossy().to_string();
-    app.handle(
-        "save",
-        &json!({ "path": rp, "items": [{ "t": "kv", "k": "Z", "v": "1" }] }),
+    // A new file matched by a rule encrypts without choosing recipients.
+    let ruled = new_file(
+        &mut app,
+        ".env.prod.new",
+        &json!([{ "t": "kv", "k": "Z", "v": "1" }]),
+        json!([]),
     )
     .unwrap();
+    assert_eq!(ruled["file"]["recipients"][0]["key"], a.as_str());
 
     // A file only B can open becomes locked once B is removed.
     let infra = demo.join("infra.env");
-    std::fs::write(&infra, "X=9\n").unwrap();
     let ip = infra.to_string_lossy().to_string();
-    app.handle(
-        "save",
-        &json!({ "path": ip, "items": [{ "t": "kv", "k": "X", "v": "9" }], "recipients": [b] }),
+    new_file(
+        &mut app,
+        "infra.env",
+        &json!([{ "t": "kv", "k": "X", "v": "9" }]),
+        json!([b]),
     )
     .unwrap();
     let state = app.handle("state", &json!({})).unwrap();
@@ -334,6 +341,7 @@ fn full_flow() {
         .handle("addSessionKey", &json!({ "content": "hello" }))
         .is_err());
 
+    text_formats_flow(&mut app, &root, &a, &b);
     robustness_flow(&mut app, &root, &a);
     git_flow(&mut app, &root, &a);
 
@@ -344,22 +352,19 @@ fn full_flow() {
 fn robustness_flow(app: &mut App, root: &std::path::Path, key: &str) {
     let dir = root.join("odd");
     std::fs::create_dir_all(&dir).unwrap();
-    // What Windows PowerShell writes: UTF-16 with a byte order mark and CRLF.
-    let utf16: Vec<u8> = [0xFF, 0xFE]
-        .into_iter()
-        .chain(
-            "A=1\r\nNAME=Zo\u{eb}\r\n"
-                .encode_utf16()
-                .flat_map(u16::to_le_bytes),
-        )
-        .collect();
-    std::fs::write(dir.join("utf16.env"), utf16).unwrap();
     std::fs::write(dir.join("binary.env"), b"\x7fELF\x00\x01\x02\xff\xfe\x00").unwrap();
-    let state = app
-        .handle("setFolder", &json!({ "path": dir.to_string_lossy() }))
+    app.handle("setFolder", &json!({ "path": dir.to_string_lossy() }))
         .unwrap();
-    assert_eq!(status(&state, "utf16.env"), "plain");
-    assert_eq!(status(&state, "binary.env"), "unreadable");
+    let items =
+        json!([{ "t": "kv", "k": "A", "v": "1" }, { "t": "kv", "k": "NAME", "v": "Zo\u{eb}" }]);
+    let saved = app
+        .handle(
+            "create",
+            &json!({ "dir": dir.to_string_lossy(), "name": "app.env", "items": items, "recipients": [key] }),
+        )
+        .unwrap();
+    let state = saved["state"].clone();
+    assert_eq!(status(&state, "binary.env"), "absent");
     let rev_of = |state: &Value, name: &str| -> Value {
         state["files"]
             .as_array()
@@ -369,34 +374,13 @@ fn robustness_flow(app: &mut App, root: &std::path::Path, key: &str) {
             .unwrap()["rev"]
             .clone()
     };
-    assert!(
-        rev_of(&state, "binary.env").is_null(),
-        "an unreadable file has no fingerprint"
-    );
-
-    let p = dir.join("utf16.env").to_string_lossy().to_string();
-    let opened = app.handle("open", &json!({ "path": p })).unwrap();
-    assert_eq!(opened["encoding"], "UTF-16");
-    let items =
-        json!([{ "t": "kv", "k": "A", "v": "1" }, { "t": "kv", "k": "NAME", "v": "Zo\u{eb}" }]);
-    assert_eq!(opened["items"], items);
-    let saved = app
-        .handle(
-            "save",
-            &json!({ "path": p, "items": items, "recipients": [key], "rev": opened["rev"] }),
-        )
-        .unwrap();
-    assert_eq!(saved["file"]["items"], items);
-    assert!(
-        saved["file"]["encoding"].is_null(),
-        "the encrypted file is plain UTF-8"
-    );
+    let p = dir.join("app.env").to_string_lossy().to_string();
     assert!(std::fs::read_to_string(&p).unwrap().starts_with("A=ENC["));
 
     // Someone else changes the file after it was opened here.
     let mine = saved["file"]["rev"].clone();
     // The file list carries the same fingerprint as the opened file.
-    assert_eq!(rev_of(&saved["state"], "utf16.env"), mine);
+    assert_eq!(rev_of(&saved["state"], "app.env"), mine);
     let theirs = json!([{ "t": "kv", "k": "A", "v": "theirs" }, { "t": "kv", "k": "NAME", "v": "Zo\u{eb}" }, { "t": "kv", "k": "EXTRA", "v": "x" }]);
     app.handle("save", &json!({ "path": p, "items": theirs }))
         .unwrap();
@@ -405,7 +389,7 @@ fn robustness_flow(app: &mut App, root: &std::path::Path, key: &str) {
         json!([{ "t": "kv", "k": "A", "v": "ours" }, { "t": "kv", "k": "NAME", "v": "Zo\u{eb}" }]);
     let listed = app.handle("state", &json!({})).unwrap();
     assert_ne!(
-        rev_of(&listed, "utf16.env"),
+        rev_of(&listed, "app.env"),
         mine,
         "a change on disk changes the listed fingerprint"
     );
@@ -466,8 +450,7 @@ fn robustness_flow(app: &mut App, root: &std::path::Path, key: &str) {
     for (name, why) in [
         ("../x.env", "without folders"),
         ("sub/x.env", "without folders"),
-        ("notes.txt", "with env in it"),
-        ("utf16.env", "already exists"),
+        ("app.env", "already exists"),
     ] {
         let err = check(app, name).unwrap_err();
         assert!(err.contains(why), "{name}: {err}");
@@ -478,7 +461,16 @@ fn robustness_flow(app: &mut App, root: &std::path::Path, key: &str) {
     );
     assert!(missing.unwrap_err().contains("doesn't exist"));
     let ok = check(app, ".env.ci").unwrap();
-    assert_eq!(ok["hasRule"], false);
+    assert_eq!(
+        (ok["hasRule"].as_bool(), ok["kind"].as_str()),
+        (Some(false), Some("env"))
+    );
+    let any = check(app, "notes.txt").unwrap();
+    assert_eq!(
+        (any["format"].as_str(), any["kind"].as_str()),
+        (Some("binary"), Some("text"))
+    );
+    assert_eq!(check(app, "config.yaml").unwrap()["format"], "yaml");
     assert!(
         !dir.join(".env.ci").exists(),
         "checking a name writes nothing"
@@ -502,7 +494,7 @@ fn robustness_flow(app: &mut App, root: &std::path::Path, key: &str) {
     );
     let made = create(app, ".env.ci", &ci, json!([key])).unwrap();
     assert_eq!(made["file"]["items"], ci);
-    assert_eq!(made["file"]["encrypted"], true);
+    assert_eq!(made["file"]["kind"], "env");
     assert!(!std::fs::read_to_string(dir.join(".env.ci"))
         .unwrap()
         .contains("abc 123"));
@@ -631,11 +623,9 @@ fn git_flow(app: &mut App, root: &std::path::Path, key: &str) {
     }
     let write = |rel: &str, text: &str| std::fs::write(repo.join(rel), text).unwrap();
     write(".gitignore", "local.env\n");
+    // Plaintext files, committed or not, aren't the app's business.
     write(".env.example", "API_KEY=\n");
-    write("local.env", "L=1\n");
     write("leak.env", "S=1\n");
-    write("config/prod.env", "KEEP=1\nCHANGE=old\nDROP=x\n");
-    std::fs::write(work.join("loose.env"), "Z=1\n").unwrap();
 
     // Built part by part, so the separators match what the app reports on Windows.
     let path = |rel: &str| {
@@ -652,21 +642,40 @@ fn git_flow(app: &mut App, root: &std::path::Path, key: &str) {
             .map(|(k, v)| json!({ "t": "kv", "k": k, "v": v }))
             .collect()
     };
+    let create = |app: &mut App, dir: &std::path::Path, name: &str, content: Value| {
+        let mut body = json!({ "dir": dir.to_string_lossy(), "name": name, "recipients": [key] });
+        if content.is_string() {
+            body["text"] = content;
+        } else {
+            body["items"] = content;
+        }
+        app.handle("create", &body).unwrap();
+    };
+    create(app, &repo, "local.env", kv(&[("L", "1")]));
+    create(app, &work, "loose.env", kv(&[("Z", "1")]));
+    create(
+        app,
+        &repo.join("config"),
+        "prod.env",
+        kv(&[("KEEP", "1"), ("CHANGE", "old"), ("DROP", "x")]),
+    );
+    create(
+        app,
+        &repo.join("config"),
+        "app.yaml",
+        json!("db:\n  host: db.internal\n  password: one\nport: 5432\n"),
+    );
     let prod = path("config/prod.env");
-    app.handle(
-        "save",
-        &json!({ "path": prod, "items": kv(&[("KEEP", "1"), ("CHANGE", "old"), ("DROP", "x")]), "recipients": [key] }),
-    )
-    .unwrap();
     assert!(git(&[
         "add",
         ".gitignore",
         ".env.example",
         "leak.env",
-        "config/prod.env"
+        "config/prod.env",
+        "config/app.yaml",
     ]));
     assert!(git(&["commit", "-q", "-m", "init"]));
-    write("new.env", "N=1\n");
+    create(app, &repo, "new.env", kv(&[("N", "1")]));
 
     let state = app.handle("state", &json!({})).unwrap();
     assert_eq!(state["git"], true);
@@ -674,15 +683,15 @@ fn git_flow(app: &mut App, root: &std::path::Path, key: &str) {
     assert_eq!(state["repos"].as_array().unwrap().len(), 1);
     assert_eq!(state["repos"][0]["name"], "shop");
     assert_eq!(state["repos"][0]["branch"], "main");
-    let file = |state: &Value, p: &str| {
+    let find = |state: &Value, p: &str| {
         state["files"]
             .as_array()
             .unwrap()
             .iter()
             .find(|f| f["path"] == p)
-            .unwrap()
-            .clone()
+            .cloned()
     };
+    let file = |state: &Value, p: &str| find(state, p).unwrap();
     let f = file(&state, &prod);
     assert_eq!(
         (f["git"].as_str(), f["status"].as_str()),
@@ -696,21 +705,21 @@ fn git_flow(app: &mut App, root: &std::path::Path, key: &str) {
             .to_string_lossy()
             .to_string()
     );
-    assert_eq!(file(&state, &path(".env.example"))["status"], "plain");
-    assert_eq!(file(&state, &path("leak.env"))["status"], "plain-tracked");
+    assert!(find(&state, &path(".env.example")).is_none());
+    assert!(find(&state, &path("leak.env")).is_none());
     let f = file(&state, &path("local.env"));
     assert_eq!(
         (f["git"].as_str(), f["status"].as_str()),
-        (Some("ignored"), Some("plain"))
+        (Some("ignored"), Some("ok"))
     );
     let f = file(&state, &path("new.env"));
     assert_eq!(
         (f["git"].as_str(), f["status"].as_str()),
-        (Some("new"), Some("plain-risk"))
+        (Some("new"), Some("ok"))
     );
     let f = file(&state, &work.join("loose.env").to_string_lossy());
     assert!(f["repo"].is_null() && f["git"].is_null());
-    assert_eq!(f["status"], "plain");
+    assert_eq!(file(&state, &path("config/app.yaml"))["format"], "yaml");
 
     // Nothing changed yet; then edit and compare with the commit.
     let same = app.handle("changes", &json!({ "path": prod })).unwrap();
@@ -737,6 +746,43 @@ fn git_flow(app: &mut App, root: &std::path::Path, key: &str) {
     );
     assert_eq!(diff["unchanged"], 1);
 
+    // Other formats compare line by line.
+    let yaml = path("config/app.yaml");
+    let opened = app.handle("open", &json!({ "path": yaml })).unwrap();
+    let edited = opened["text"]
+        .as_str()
+        .unwrap()
+        .replace("password: one", "password: two");
+    app.handle(
+        "save",
+        &json!({ "path": yaml, "text": edited, "rev": opened["rev"] }),
+    )
+    .unwrap();
+    let diff = app.handle("changes", &json!({ "path": yaml })).unwrap();
+    assert_eq!(
+        (diff["kind"].as_str(), diff["changed"].as_u64()),
+        (Some("text"), Some(2))
+    );
+    let changed: Vec<(String, String)> = diff["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|l| l["kind"] == "added" || l["kind"] == "removed")
+        .map(|l| {
+            (
+                l["kind"].as_str().unwrap().to_string(),
+                l["text"].as_str().unwrap().trim().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        changed,
+        [
+            ("removed".to_string(), "password: one".to_string()),
+            ("added".to_string(), "password: two".to_string())
+        ]
+    );
+
     // A file that was never committed is all additions; one outside a repository can't be compared.
     let fresh = app
         .handle("changes", &json!({ "path": path("new.env") }))
@@ -753,20 +799,323 @@ fn git_flow(app: &mut App, root: &std::path::Path, key: &str) {
         )
         .unwrap_err();
     assert!(err.contains("isn't in a Git repository"), "{err}");
+}
 
-    // Ignoring adds one anchored line, once.
+/// YAML, JSON, INI and plain text files, encrypted by sops itself as a
+/// project would: recognised by content, opened as text, and saved without
+/// losing their recipients or options.
+fn text_formats_flow(app: &mut App, root: &std::path::Path, a: &str, b: &str) {
+    let dir = root.join("formats");
+    std::fs::create_dir_all(dir.join("deep").join("er").join("still").join("deeper")).unwrap();
+    std::fs::create_dir_all(dir.join("vendor")).unwrap();
+    std::fs::create_dir_all(dir.join("strict")).unwrap();
+    let state = app.handle("state", &json!({})).unwrap();
+    let sops = state["sops"]["path"].as_str().unwrap().to_string();
+    let keys = root.join("moved-keys.txt");
+    let run = |cwd: &std::path::Path, args: &[&str], stdin: &[u8]| -> Vec<u8> {
+        use std::io::Write;
+        let mut child = std::process::Command::new(&sops)
+            .args(args)
+            .current_dir(cwd)
+            .env("SOPS_AGE_KEY_FILE", &keys)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(stdin).unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out.stdout
+    };
+    // Encrypts like `sops encrypt --age <a> file > file` would.
+    let encrypt = |rel: &[&str], types: (&str, &str), extra: &[&str], plain: &[u8]| {
+        let target = rel.iter().fold(dir.clone(), |p, part| p.join(part));
+        let cwd = target.parent().unwrap().to_path_buf();
+        let name = target.file_name().unwrap().to_string_lossy().to_string();
+        let mut args = vec!["encrypt", "--input-type", types.0, "--output-type", types.1];
+        if !extra.contains(&"--rule") {
+            args.extend(["--age", a]);
+        }
+        args.extend(extra.iter().filter(|x| **x != "--rule"));
+        args.extend(["--filename-override", &name]);
+        std::fs::write(&target, run(&cwd, &args, plain)).unwrap();
+        target.to_string_lossy().to_string()
+    };
+    let decrypt = |path: &str, types: (&str, &str)| -> String {
+        String::from_utf8(run(
+            &dir,
+            &[
+                "decrypt",
+                "--input-type",
+                types.0,
+                "--output-type",
+                types.1,
+                path,
+            ],
+            b"",
+        ))
+        .unwrap()
+    };
+    let notes = encrypt(
+        &["recovery-codes.txt"],
+        ("binary", "json"),
+        &[],
+        b"Recovery codes\r\n7f3a-91c2\r\n",
+    );
+    let yaml = encrypt(
+        &["config.yaml"],
+        ("yaml", "yaml"),
+        &["--encrypted-regex", "^password$"],
+        b"db:\n  host: db.internal\n  password: hunter2\n",
+    );
+    let jsonf = encrypt(
+        &["app.json"],
+        ("json", "json"),
+        &[],
+        br#"{"api": {"token": "tok-one"}}"#,
+    );
+    let ini = encrypt(&["db.ini"], ("ini", "ini"), &[], b"[db]\npass = pass-one\n");
+    let raw = encrypt(
+        &["raw.secret"],
+        ("binary", "json"),
+        &[],
+        b"\xff\x00\x01binary",
+    );
+    encrypt(
+        &["deep", "er", "still", "deeper", "far.yaml"],
+        ("yaml", "yaml"),
+        &[],
+        b"a: 1\n",
+    );
+    encrypt(&["vendor", "dep.yaml"], ("yaml", "yaml"), &[], b"a: 1\n");
+    std::fs::write(
+        dir.join("strict").join(".sops.yaml"),
+        format!("creation_rules:\n  - age: {a}\n    mac_only_encrypted: true\n"),
+    )
+    .unwrap();
+    let strict = encrypt(
+        &["strict", "only-mac.yaml"],
+        ("yaml", "yaml"),
+        &["--rule"],
+        b"x: 1\n",
+    );
+    // Files that merely look a bit like sops files.
+    std::fs::write(
+        dir.join("decoy.json"),
+        r#"{"sops": {"version": "3"}, "mac": "ENC[AES256_GCM,data:x]"}"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("plain.yaml"), "password: hunter2\n").unwrap();
+
     let state = app
-        .handle("ignore", &json!({ "path": path("new.env") }))
+        .handle("setFolder", &json!({ "path": dir.to_string_lossy() }))
         .unwrap();
-    let f = file(&state, &path("new.env"));
+    let format = |state: &Value, rel: &str| -> String {
+        state["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["name"] == rel)
+            .map(|f| f["format"].as_str().unwrap().to_string())
+            .unwrap_or_else(|| "absent".into())
+    };
+    for (rel, expected) in [
+        ("recovery-codes.txt", "binary"),
+        ("config.yaml", "yaml"),
+        ("app.json", "json"),
+        ("db.ini", "ini"),
+        ("raw.secret", "binary"),
+        ("decoy.json", "absent"),
+        ("plain.yaml", "absent"),
+    ] {
+        assert_eq!(format(&state, rel), expected, "{rel}");
+    }
+    let far = std::path::Path::new("deep")
+        .join("er")
+        .join("still")
+        .join("deeper")
+        .join("far.yaml");
+    let far = far.to_string_lossy().to_string();
+    let dep = std::path::Path::new("vendor")
+        .join("dep.yaml")
+        .to_string_lossy()
+        .to_string();
+    assert_eq!(format(&state, &far), "absent", "deeper than the scan depth");
     assert_eq!(
-        (f["git"].as_str(), f["status"].as_str()),
-        (Some("ignored"), Some("plain"))
+        format(&state, &dep),
+        "absent",
+        "vendor is skipped by default"
     );
-    app.handle("ignore", &json!({ "path": path("new.env") }))
+
+    // Scan depth and skipped folders are settings.
+    let state = app
+        .handle("setSettings", &json!({ "scanDepth": 4 }))
         .unwrap();
+    assert_eq!(state["settings"]["scanDepth"], 4);
+    assert_eq!(format(&state, &far), "yaml");
+    for bad in [0, 11] {
+        assert!(app
+            .handle("setSettings", &json!({ "scanDepth": bad }))
+            .is_err());
+    }
+    let state = app
+        .handle("setSettings", &json!({ "skipDirs": ["node_modules", " "] }))
+        .unwrap();
+    assert_eq!(state["settings"]["skipDirs"], json!(["node_modules"]));
+    assert_eq!(format(&state, &dep), "yaml");
+    assert!(app
+        .handle("setSettings", &json!({ "skipDirs": ["a/b"] }))
+        .is_err());
+    let defaults = state["settings"]["defaultSkipDirs"].clone();
+    let state = app
+        .handle(
+            "setSettings",
+            &json!({ "skipDirs": defaults, "scanDepth": 3 }),
+        )
+        .unwrap();
+    assert_eq!(state["settings"]["skipDirs"], defaults);
+    assert_eq!(format(&state, &dep), "absent");
+    assert_eq!(App::new(Some(dir.clone()), vec![]).scan_depth(), 3);
+
+    // A text file opens as text and saves in place, Windows line endings kept.
+    let opened = app.handle("open", &json!({ "path": notes })).unwrap();
     assert_eq!(
-        std::fs::read_to_string(repo.join(".gitignore")).unwrap(),
-        "local.env\n/new.env\n"
+        (opened["kind"].as_str(), opened["format"].as_str()),
+        (Some("text"), Some("binary"))
     );
+    assert_eq!(opened["text"], "Recovery codes\r\n7f3a-91c2\r\n");
+    assert!(opened["reencrypt"].is_null());
+    let saved = app
+        .handle(
+            "save",
+            &json!({ "path": notes, "text": "Recovery codes\n2b8e-40d7\n", "rev": opened["rev"] }),
+        )
+        .unwrap();
+    assert_eq!(saved["file"]["text"], "Recovery codes\r\n2b8e-40d7\r\n");
+    assert_eq!(
+        decrypt(&notes, ("json", "binary")),
+        "Recovery codes\r\n2b8e-40d7\r\n"
+    );
+    assert!(!std::fs::read_to_string(&notes)
+        .unwrap()
+        .contains("2b8e-40d7"));
+    assert_eq!(saved["file"]["recipients"][0]["key"], a);
+    // A stale fingerprint is a conflict, as for env files.
+    let stale = app
+        .handle(
+            "save",
+            &json!({ "path": notes, "text": "x\n", "rev": opened["rev"] }),
+        )
+        .unwrap();
+    assert_eq!(stale, json!({ "conflict": true }));
+    assert!(
+        app.handle("save", &json!({ "path": notes, "items": [] }))
+            .is_err(),
+        "a text file takes text"
+    );
+
+    // YAML is encrypted again with its options: only `password` is encrypted.
+    let opened = app.handle("open", &json!({ "path": yaml })).unwrap();
+    let text = opened["text"]
+        .as_str()
+        .unwrap()
+        .replace("hunter2", "hunter3");
+    app.handle("save", &json!({ "path": yaml, "text": text }))
+        .unwrap();
+    let on_disk = std::fs::read_to_string(&yaml).unwrap();
+    assert!(on_disk.contains("host: db.internal") && !on_disk.contains("hunter3"));
+    assert!(on_disk.contains("encrypted_regex: ^password$"));
+    assert!(decrypt(&yaml, ("yaml", "yaml")).contains("password: hunter3"));
+    let both = app
+        .handle(
+            "setRecipients",
+            &json!({ "path": yaml, "recipients": [a, b] }),
+        )
+        .unwrap();
+    assert_eq!(both["file"]["recipients"].as_array().unwrap().len(), 2);
+    assert!(std::fs::read_to_string(&yaml)
+        .unwrap()
+        .contains("encrypted_regex: ^password$"));
+
+    // Values with a "-", which base64 ciphertext never contains, so finding
+    // them in the file can only mean plaintext.
+    for (path, from, to) in [
+        (&jsonf, "tok-one", "tok-two"),
+        (&ini, "pass-one", "pass-two"),
+    ] {
+        let opened = app.handle("open", &json!({ "path": path })).unwrap();
+        let text = opened["text"].as_str().unwrap().replace(from, to);
+        let saved = app
+            .handle("save", &json!({ "path": path, "text": text }))
+            .unwrap();
+        assert!(
+            saved["file"]["text"].as_str().unwrap().contains(to),
+            "{path}"
+        );
+        assert!(
+            !std::fs::read_to_string(path).unwrap().contains(to),
+            "{path}"
+        );
+    }
+    let broken = app.handle("save", &json!({ "path": jsonf, "text": "{ not json" }));
+    assert!(broken.is_err(), "sops refuses invalid JSON");
+    assert!(
+        std::fs::read_to_string(&jsonf)
+            .unwrap()
+            .contains("\"sops\""),
+        "and the file stays as it was"
+    );
+
+    // What the app can't keep, it doesn't touch.
+    let opened = app.handle("open", &json!({ "path": strict })).unwrap();
+    assert!(opened["reencrypt"]
+        .as_str()
+        .unwrap()
+        .contains("mac_only_encrypted"));
+    let before = std::fs::read(&strict).unwrap();
+    let err = app
+        .handle("save", &json!({ "path": strict, "text": "x: 2\n" }))
+        .unwrap_err();
+    assert!(err.contains("mac_only_encrypted"), "{err}");
+    assert!(app
+        .handle(
+            "setRecipients",
+            &json!({ "path": strict, "recipients": [a, b] })
+        )
+        .is_err());
+    assert_eq!(std::fs::read(&strict).unwrap(), before);
+    let err = app.handle("open", &json!({ "path": raw })).unwrap_err();
+    assert!(err.contains("binary data"), "{err}");
+
+    // New files take their format from the name.
+    let new_text = |app: &mut App, name: &str, text: &str| {
+        app.handle(
+            "create",
+            &json!({ "dir": dir.to_string_lossy(), "name": name, "text": text, "recipients": [a] }),
+        )
+    };
+    assert!(new_text(app, "empty.yaml", " \n")
+        .unwrap_err()
+        .contains("content"));
+    let made = new_text(app, "service.yaml", "token: abc\n").unwrap();
+    assert_eq!(
+        (
+            made["file"]["format"].as_str(),
+            made["file"]["kind"].as_str()
+        ),
+        (Some("yaml"), Some("text"))
+    );
+    assert_eq!(format(&made["state"], "service.yaml"), "yaml");
+    let made = new_text(app, "codes.txt", "c64f-1e8b\n").unwrap();
+    assert_eq!(made["file"]["format"], "binary");
+    assert_eq!(made["file"]["text"], "c64f-1e8b\n");
+    assert!(app
+        .handle("create", &json!({ "dir": dir.to_string_lossy(), "name": "x.json", "items": [{ "t": "kv", "k": "A", "v": "1" }], "recipients": [a] }))
+        .unwrap_err()
+        .contains("couldn't be read"));
 }

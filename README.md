@@ -1,6 +1,6 @@
 # Open SOPS UI
 
-A desktop app for viewing, editing and encrypting env files with [SOPS](https://github.com/getsops/sops) and age keys. Built with [Tauri](https://tauri.app) for Linux, Windows and macOS.
+A desktop app for viewing, editing and encrypting files with [SOPS](https://github.com/getsops/sops) and age keys. Built with [Tauri](https://tauri.app) for Linux, Windows and macOS.
 
 Decrypted values are held in memory only. The only network request the app makes is the optional update check, which reads the list of releases from GitHub.
 
@@ -8,19 +8,22 @@ Decrypted values are held in memory only. The only network request the app makes
   <img src="docs/screenshots/editor-light.png" width="49%" alt="Editing an encrypted env file: one value changed, one variable added">
   <img src="docs/screenshots/changes-dark.png" width="49%" alt="Dark mode: what changed in an encrypted file since the last commit">
 </p>
+<p align="center">
+  <img src="docs/screenshots/text-editor-light.png" width="49%" alt="An encrypted YAML file opened as text, with syntax colours">
+</p>
 
 ## What it does
 
-- Lists env files in a folder and shows which are encrypted, which of your keys opens each, and which are still plaintext.
-- Knows Git, where env files usually live: files are grouped by repository with its branch, marked when they differ from the last commit, and a comparison shows which variables were added, changed or removed, decrypted, where `git diff` only shows ciphertext.
-- Warns about plaintext secrets that Git would commit or already has, and can add a file to `.gitignore`.
-- Edits values in a table and saves each change through `sops` on its own, so unchanged values stay byte-identical in Git and nothing decrypted is written to disk, not even to a temp file.
+- Lists the SOPS-encrypted files in a folder, whatever their name: env, YAML, JSON and INI files, and any other text file sops encrypted as a whole. Files are recognised by their sops metadata; plaintext files aren't listed. It shows which of your keys opens each.
+- Searches subfolders three levels deep by default and skips dependency and build folders such as `node_modules`; both are settings. A thin bar at the top of the file list shows when a scan takes a moment.
+- Knows Git: files are grouped by repository with its branch, marked when they differ from the last commit, and a comparison shows what changed, decrypted, where `git diff` only shows ciphertext: by variable for env files, by line for everything else.
+- Edits env files in a table and saves each change through `sops` on its own, so unchanged values stay byte-identical in Git and nothing decrypted is written to disk, not even to a temp file.
+- Edits every other format as text, masked until you show it, with syntax colours for YAML, JSON, INI and TOML. A text file encrypted as a whole is saved in place; a YAML, JSON or INI file is encrypted again for the same recipients, keeping options such as `encrypted_regex`. Files also encrypted for PGP or a cloud KMS, or using options that only `.sops.yaml` can set (`mac_only_encrypted`, comment rules, several key groups), open read-only, because encrypting them again would lose those.
 - Removes a copied value from the clipboard again after a time you choose in the settings (one minute by default).
-- Creates new encrypted env files: pick a folder and a name, fill in the variables, and the file is written already encrypted.
+- Creates new encrypted files: pick a folder and a name, fill in the content, and the file is written already encrypted. The name sets the format: env names get a table of variables, `.yaml`, `.json`, `.ini` and any other name a text editor.
 - Tells you when a newer version is available: it checks GitHub's release list on start and once a day, and shows an icon next to the settings. A stable version only announces stable releases; a pre-release also announces newer pre-releases. You can turn the check off in the settings. Nothing is downloaded or installed automatically. The bottom of the settings links to the release page of your version, this repository, and the issue list for reporting a problem.
 - Picks up changes made outside the app, such as a Git pull: the file list refreshes when you switch back to the window or press the refresh button, and an open file reloads unless you have unsaved edits.
 - Asks before overwriting a file that changed on disk after you opened it, for example through a Git pull.
-- Reads plaintext files in UTF-8, UTF-16 and Windows-1252; encrypted files are always written as UTF-8.
 - Loads age keys from the default location, from any number of custom key files, or pasted for the session only. A pasted or newly created key can be saved to the default location.
 - Manages who can decrypt a file, with a saved list of named public keys.
 - Creates key pairs for other places that decrypt with sops, such as a server or a pipeline: the public key is saved as a recipient, and the private key is copied to the clipboard once and never stored by the app.
@@ -65,7 +68,7 @@ A `sops` binary shipped with the app is used first; otherwise the one on your `P
 
 Git is optional. Without a repository, or without `git` installed, the app works the same and simply shows no Git information. It never commits or pushes, and it never writes decrypted values to a file.
 
-`git` is optional; it's used to warn about plaintext env files that Git isn't ignoring. `age` and `age-keygen` aren't needed.
+`age` and `age-keygen` aren't needed.
 
 The packages aren't signed. macOS and Windows may warn on first start.
 

@@ -130,6 +130,13 @@ pub fn ui_test(app: tauri::AppHandle, action: String, body: Value) -> Result<Val
                 std::fs::write(dir.join("releases.json"), text).is_ok()
             ))
         }
+        // What ui-tests/selftest.mjs prepared: a teammate's key to paste, and
+        // encrypted files to drop into the project as a git pull would.
+        "fixture" => {
+            let text =
+                std::fs::read_to_string(dir.join("fixture.json")).map_err(|e| e.to_string())?;
+            serde_json::from_str(&text).map_err(|e| e.to_string())
+        }
         // Which address the app would have opened; see `record_opened_page`.
         "openedPage" => Ok(json!(
             std::fs::read_to_string(dir.join("opened-page.txt")).ok()
