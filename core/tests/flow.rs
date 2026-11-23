@@ -877,9 +877,9 @@ fn text_formats_flow(app: &mut App, root: &std::path::Path, a: &str, b: &str) {
         &["app.json"],
         ("json", "json"),
         &[],
-        br#"{"api": {"token": "t-1"}}"#,
+        br#"{"api": {"token": "tok-one"}}"#,
     );
-    let ini = encrypt(&["db.ini"], ("ini", "ini"), &[], b"[db]\npass = p1\n");
+    let ini = encrypt(&["db.ini"], ("ini", "ini"), &[], b"[db]\npass = pass-one\n");
     let raw = encrypt(
         &["raw.secret"],
         ("binary", "json"),
@@ -1043,7 +1043,12 @@ fn text_formats_flow(app: &mut App, root: &std::path::Path, a: &str, b: &str) {
         .unwrap()
         .contains("encrypted_regex: ^password$"));
 
-    for (path, from, to) in [(&jsonf, "t-1", "t-2"), (&ini, "p1", "p2")] {
+    // Values with a "-", which base64 ciphertext never contains, so finding
+    // them in the file can only mean plaintext.
+    for (path, from, to) in [
+        (&jsonf, "tok-one", "tok-two"),
+        (&ini, "pass-one", "pass-two"),
+    ] {
         let opened = app.handle("open", &json!({ "path": path })).unwrap();
         let text = opened["text"].as_str().unwrap().replace(from, to);
         let saved = app
