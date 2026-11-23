@@ -14,8 +14,6 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-const DOTENV: [&str; 4] = ["--input-type", "dotenv", "--output-type", "dotenv"];
-
 type Res<T> = Result<T, String>;
 
 // ---------------------------------------------------------------------------
@@ -74,6 +72,10 @@ struct Config {
     clipboard_clear_seconds: Option<u32>,
     /// Whether to look for a newer release on start and once a day; on unless turned off.
     check_updates: Option<bool>,
+    /// How many folder levels below the open folder the file list searches.
+    scan_depth: Option<u32>,
+    /// Folder names the scan doesn't enter; the defaults when unset.
+    skip_dirs: Option<Vec<String>>,
 }
 
 const DEFAULT_CLIPBOARD_CLEAR_SECONDS: u32 = 60;
@@ -375,6 +377,8 @@ fn io_msg(e: std::io::Error) -> String {
 struct Output {
     code: i32,
     stdout: String,
+    /// False when stdout wasn't valid UTF-8 and `stdout` had to replace bytes.
+    utf8: bool,
     stderr: String,
 }
 
@@ -411,6 +415,7 @@ fn run(
     let out = child.wait_with_output()?;
     Ok(Output {
         code: out.status.code().unwrap_or(-1),
+        utf8: std::str::from_utf8(&out.stdout).is_ok(),
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
     })
@@ -537,6 +542,17 @@ fn sops_error(stderr: &str) -> String {
         .to_string()
 }
 
+/// The plaintext sops printed, or why it can't be shown.
+fn plaintext(out: Output) -> Res<String> {
+    if out.code != 0 {
+        return Err(sops_error(&out.stderr));
+    }
+    if !out.utf8 || out.stdout.contains('\0') {
+        return Err("This file holds binary data, which the app can't show as text.".into());
+    }
+    Ok(out.stdout)
+}
+
 // ---------------------------------------------------------------------------
 // Env file model
 // ---------------------------------------------------------------------------
@@ -602,15 +618,378 @@ pub fn serialize_env(items: &[Item]) -> Res<String> {
     Ok(out)
 }
 
-fn file_recipients(text: &str) -> Vec<String> {
-    let re = Regex::new(r"(?m)^sops_age__list_\d+__map_recipient=(age1[a-z0-9]+)\s*$").unwrap();
-    re.captures_iter(text).map(|c| c[1].to_string()).collect()
+// ---------------------------------------------------------------------------
+// SOPS files: formats and metadata
+// ---------------------------------------------------------------------------
+//
+// sops encrypts dotenv, YAML, JSON and INI files value by value, and anything
+// else as one block of text ("binary"), stored as a JSON or YAML document
+// with a single `data` value. Which one a file is shows in its content, not
+// its name, so the app recognises files by their sops metadata.
+
+/// How sops stores a file on disk.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Store {
+    Dotenv,
+    Yaml,
+    Json,
+    Ini,
 }
 
-fn is_encrypted(text: &str) -> bool {
-    text.lines()
-        .any(|l| l.starts_with("sops_version=") || l.starts_with("sops_mac="))
+impl Store {
+    fn as_str(self) -> &'static str {
+        match self {
+            Store::Dotenv => "dotenv",
+            Store::Yaml => "yaml",
+            Store::Json => "json",
+            Store::Ini => "ini",
+        }
+    }
 }
+
+/// A file's format: how it is stored, and whether its plaintext is the whole
+/// file as text (sops' "binary" type) rather than a structure of values.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Format {
+    store: Store,
+    whole: bool,
+}
+
+impl Format {
+    const DOTENV: Format = Format {
+        store: Store::Dotenv,
+        whole: false,
+    };
+    const BINARY: Format = Format {
+        store: Store::Json,
+        whole: true,
+    };
+
+    /// The name the UI shows and sops calls the plaintext type.
+    fn name(self) -> &'static str {
+        if self.whole {
+            "binary"
+        } else {
+            self.store.as_str()
+        }
+    }
+
+    /// Env files get the variable table; everything else a text editor.
+    fn is_env(self) -> bool {
+        self == Format::DOTENV
+    }
+
+    fn plain_type(self) -> &'static str {
+        self.name()
+    }
+
+    /// Arguments for reading the file and printing its plaintext.
+    fn decrypt_args(self) -> [&'static str; 4] {
+        [
+            "--input-type",
+            self.store.as_str(),
+            "--output-type",
+            self.plain_type(),
+        ]
+    }
+
+    /// Arguments for turning plaintext into a file of this format.
+    fn encrypt_args(self) -> [&'static str; 4] {
+        [
+            "--input-type",
+            self.plain_type(),
+            "--output-type",
+            self.store.as_str(),
+        ]
+    }
+
+    /// Arguments for changing single values in place (`set`, `unset`).
+    fn store_args(self) -> [&'static str; 4] {
+        [
+            "--input-type",
+            self.store.as_str(),
+            "--output-type",
+            self.store.as_str(),
+        ]
+    }
+}
+
+/// The format a new file gets from its name: the extensions sops knows, env
+/// files by an `env` part in the name, and anything else as text.
+fn format_for_name(name: &str) -> Format {
+    let lower = name.to_lowercase();
+    let store = match lower.rsplit('.').next() {
+        _ if !lower.contains('.') => None,
+        Some("yaml" | "yml") => Some(Store::Yaml),
+        Some("json") => Some(Store::Json),
+        Some("ini") => Some(Store::Ini),
+        _ => None,
+    };
+    match store {
+        Some(store) => Format {
+            store,
+            whole: false,
+        },
+        None if looks_like_env(name) => Format::DOTENV,
+        None => Format::BINARY,
+    }
+}
+
+fn looks_like_env(name: &str) -> bool {
+    name.to_lowercase().split('.').any(|part| part == "env")
+}
+
+/// What a file's sops metadata says, as far as the app needs it.
+#[derive(Clone, Debug, PartialEq)]
+struct Meta {
+    format: Format,
+    /// age recipients, in the order they appear.
+    recipients: Vec<String>,
+    /// Also encrypted for PGP, a cloud KMS or Vault, which the app can't
+    /// name when it encrypts the file again.
+    other_keys: bool,
+    /// Options to pass on when encrypting the file again, as sops flags.
+    options: Vec<(&'static str, String)>,
+    /// Set when the file uses something re-encrypting can't keep, with what.
+    cant_keep: Option<&'static str>,
+}
+
+impl Meta {
+    /// Why the app can't encrypt this file again without losing something,
+    /// or `None` when it can.
+    fn reencrypt_problem(&self) -> Option<String> {
+        if self.other_keys {
+            return Some(
+                "This file is also encrypted for keys other than age, such as PGP or a cloud KMS. \
+                 The app can't encrypt it again without them; change it with sops directly."
+                    .into(),
+            );
+        }
+        if let Some(what) = self.cant_keep {
+            return Some(format!(
+                "This file uses {what}, which the app can't keep when it encrypts the file again. \
+                 Change it with sops directly."
+            ));
+        }
+        if self.recipients.is_empty() {
+            return Some(
+                "This file isn't encrypted for an age key, so the app can't encrypt it again."
+                    .into(),
+            );
+        }
+        None
+    }
+}
+
+/// What the UI sends as a file's content: variables for env files, the
+/// whole text for every other format.
+enum Content {
+    Items(Vec<Item>),
+    Text(String),
+}
+
+impl Content {
+    fn from_body(body: &Value) -> Res<Content> {
+        if let Some(text) = body.get("text").and_then(Value::as_str) {
+            return Ok(Content::Text(text.to_string()));
+        }
+        serde_json::from_value(body.get("items").cloned().unwrap_or(Value::Null))
+            .map(Content::Items)
+            .map_err(|_| "The file content couldn't be read.".to_string())
+    }
+}
+
+/// Metadata entries the app passes on, with the flag that sets them.
+const KEPT_OPTIONS: [(&str, &str); 4] = [
+    ("encrypted_regex", "--encrypted-regex"),
+    ("unencrypted_regex", "--unencrypted-regex"),
+    ("encrypted_suffix", "--encrypted-suffix"),
+    ("unencrypted_suffix", "--unencrypted-suffix"),
+];
+/// Metadata entries sops only takes from .sops.yaml, not from flags.
+const CONFIG_ONLY_OPTIONS: [&str; 3] = [
+    "mac_only_encrypted",
+    "encrypted_comment_regex",
+    "unencrypted_comment_regex",
+];
+fn config_only_label(name: &str) -> &'static str {
+    match name {
+        "mac_only_encrypted" => "the sops option mac_only_encrypted",
+        "encrypted_comment_regex" => "the sops option encrypted_comment_regex",
+        _ => "the sops option unencrypted_comment_regex",
+    }
+}
+
+const OTHER_KEY_TYPES: [&str; 5] = ["pgp", "kms", "gcp_kms", "azure_kv", "hc_vault"];
+
+/// Recognises a sops-encrypted file by its content. `None` for anything else,
+/// including files that merely mention sops.
+fn detect(text: &str) -> Option<Meta> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    if text.lines().any(|l| l.starts_with("sops_mac=")) {
+        let entries: Vec<(&str, &str)> = text
+            .lines()
+            .filter_map(|l| l.split_once('='))
+            .filter_map(|(k, v)| Some((k.strip_prefix("sops_")?, v)))
+            .collect();
+        let only_data = text
+            .lines()
+            .filter(|l| !l.trim().is_empty() && !l.starts_with('#') && !l.starts_with("sops_"))
+            .all(|l| l.starts_with("data="));
+        let format = Format {
+            store: Store::Dotenv,
+            whole: only_data && text.lines().any(|l| l.starts_with("data=")),
+        };
+        return Some(flat_meta(format, &entries));
+    }
+    if let Some(start) = text.lines().position(|l| l.trim() == "[sops]") {
+        let entries: Vec<(&str, &str)> = text
+            .lines()
+            .skip(start + 1)
+            .take_while(|l| !l.trim_start().starts_with('['))
+            .filter_map(|l| l.split_once('='))
+            .map(|(k, v)| (k.trim(), v.trim()))
+            .collect();
+        if entries.iter().any(|(k, _)| *k == "mac") {
+            let format = Format {
+                store: Store::Ini,
+                whole: false,
+            };
+            return Some(flat_meta(format, &entries));
+        }
+        return None;
+    }
+    if text.trim_start().starts_with('{') {
+        let doc: Value = serde_json::from_str(text).ok()?;
+        let top = doc.as_object()?;
+        let keys: Vec<&str> = top.keys().map(String::as_str).collect();
+        return tree_meta(Store::Json, top.get("sops")?, &keys, top.get("data"));
+    }
+    // YAML, possibly with several documents; sops writes its metadata into each.
+    use serde::Deserialize as _;
+    for doc in serde_yaml::Deserializer::from_str(text) {
+        let Ok(serde_yaml::Value::Mapping(map)) = serde_yaml::Value::deserialize(doc) else {
+            continue;
+        };
+        let Some(sops) = map.get("sops") else {
+            continue;
+        };
+        let sops = serde_json::to_value(sops).ok()?;
+        let keys: Vec<&str> = map.keys().filter_map(|k| k.as_str()).collect();
+        let data = map.get("data").and_then(|d| serde_json::to_value(d).ok());
+        return tree_meta(Store::Yaml, &sops, &keys, data.as_ref());
+    }
+    None
+}
+
+/// Metadata from dotenv and INI files, where sops flattens it into keys
+/// such as `age__list_0__map_recipient`.
+fn flat_meta(format: Format, entries: &[(&str, &str)]) -> Meta {
+    let recipient = Regex::new(r"(^|__)age__list_\d+__map_recipient$").unwrap();
+    let other = Regex::new(&format!(r"(^|__)({})__list_", OTHER_KEY_TYPES.join("|"))).unwrap();
+    let groups: BTreeSet<&str> = entries
+        .iter()
+        .filter_map(|(k, _)| k.strip_prefix("key_groups__list_"))
+        .filter_map(|rest| rest.split("__").next())
+        .collect();
+    let value = |name: &str| {
+        entries
+            .iter()
+            .find(|(k, _)| *k == name)
+            .map(|(_, v)| v.trim().to_string())
+    };
+    let config_only = CONFIG_ONLY_OPTIONS
+        .iter()
+        .find(|name| value(name).is_some_and(|v| !v.is_empty() && v != "false"));
+    Meta {
+        format,
+        recipients: entries
+            .iter()
+            .filter(|(k, _)| recipient.is_match(k))
+            .map(|(_, v)| v.trim().to_string())
+            .filter(|v| v.starts_with("age1"))
+            .collect(),
+        other_keys: entries.iter().any(|(k, _)| other.is_match(k)),
+        options: KEPT_OPTIONS
+            .iter()
+            .filter_map(|(name, flag)| Some((*flag, value(name)?)))
+            .collect(),
+        cant_keep: if groups.len() > 1 {
+            Some("several key groups")
+        } else {
+            config_only.map(|name| config_only_label(name))
+        },
+    }
+}
+
+/// Metadata from YAML and JSON files, where it is a `sops` object.
+fn tree_meta(store: Store, sops: &Value, keys: &[&str], data: Option<&Value>) -> Option<Meta> {
+    sops.get("mac")?.as_str()?;
+    let list = |v: Option<&Value>| v.and_then(Value::as_array).cloned().unwrap_or_default();
+    let groups = list(sops.get("key_groups"));
+    let mut places = vec![sops];
+    places.extend(groups.iter());
+    let recipients = places
+        .iter()
+        .flat_map(|p| list(p.get("age")))
+        .filter_map(|r| r.get("recipient")?.as_str().map(str::to_string))
+        .collect();
+    let other_keys = places
+        .iter()
+        .any(|p| OTHER_KEY_TYPES.iter().any(|t| !list(p.get(*t)).is_empty()));
+    let set = |name: &str| match sops.get(name) {
+        Some(Value::String(s)) => !s.is_empty(),
+        Some(Value::Bool(b)) => *b,
+        _ => false,
+    };
+    let whole =
+        data.is_some_and(Value::is_string) && keys.iter().all(|k| matches!(*k, "data" | "sops"));
+    Some(Meta {
+        format: Format { store, whole },
+        recipients,
+        other_keys,
+        options: KEPT_OPTIONS
+            .iter()
+            .filter_map(|(name, flag)| Some((*flag, sops.get(*name)?.as_str()?.to_string())))
+            .collect(),
+        cant_keep: if groups.len() > 1 {
+            Some("several key groups")
+        } else {
+            CONFIG_ONLY_OPTIONS
+                .iter()
+                .find(|n| set(n))
+                .map(|name| config_only_label(name))
+        },
+    })
+}
+
+/// A cheap first look at the end of a file, where sops puts its metadata:
+/// files without an encrypted MAC there are skipped without reading them.
+const TAIL_BYTES: u64 = 64 * 1024;
+
+fn tail_looks_encrypted(path: &Path, len: u64) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let start = len.saturating_sub(TAIL_BYTES);
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return false;
+    }
+    let mut buf = Vec::new();
+    if file.take(TAIL_BYTES).read_to_end(&mut buf).is_err() {
+        return false;
+    }
+    let has = |needle: &[u8]| buf.windows(needle.len()).any(|w| w == needle);
+    has(b"ENC[AES256_GCM,data:") && has(b"mac")
+}
+
+/// Extensions of files that are never text, so never sops files.
+const BINARY_EXTENSIONS: [&str; 32] = [
+    "png", "jpg", "jpeg", "gif", "webp", "ico", "bmp", "tif", "tiff", "pdf", "zip", "gz", "tgz",
+    "bz2", "xz", "7z", "rar", "tar", "jar", "war", "class", "so", "dll", "dylib", "exe", "o", "a",
+    "woff", "woff2", "ttf", "mp4", "mp3",
+];
 
 // ---------------------------------------------------------------------------
 // .sops.yaml rules
@@ -764,9 +1143,6 @@ impl GitState {
             GitState::Ignored => "ignored",
         }
     }
-    fn tracked(self) -> bool {
-        matches!(self, GitState::Clean | GitState::Modified)
-    }
 }
 
 /// Asks git about a set of files in one repository: two calls per repository,
@@ -829,14 +1205,6 @@ fn git_states(git: &Path, root: &Path, files: &[PathBuf]) -> Option<BTreeMap<Pat
     Some(states)
 }
 
-/// Committed on purpose with placeholder values, like `.env.example`.
-fn is_template(name: &str) -> bool {
-    let lower = name.to_lowercase();
-    ["example", "sample", "template", "dist"]
-        .iter()
-        .any(|word| lower.split('.').any(|part| part == *word))
-}
-
 /// What changed between two versions of an env file, by variable.
 fn env_changes(old: &str, new: &str) -> (Vec<Value>, usize) {
     let pairs = |text: &str| -> Vec<(String, String)> {
@@ -871,47 +1239,338 @@ fn env_changes(old: &str, new: &str) -> (Vec<Value>, usize) {
     (changes, unchanged)
 }
 
+/// What changed between two versions of a text file, line by line: changed
+/// lines with up to two unchanged lines around them, and the number of lines
+/// left out in between (`skip`). Returns the lines and how many changed.
+fn text_changes(old: &str, new: &str) -> (Vec<Value>, usize) {
+    const CONTEXT: usize = 2;
+    let split = |t: &str| -> Vec<String> {
+        t.replace("\r\n", "\n")
+            .lines()
+            .map(str::to_string)
+            .collect()
+    };
+    let (a, b) = (split(old), split(new));
+    let prefix = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    let suffix = a[prefix..]
+        .iter()
+        .rev()
+        .zip(b[prefix..].iter().rev())
+        .take_while(|(x, y)| x == y)
+        .count();
+    let (mid_a, mid_b) = (&a[prefix..a.len() - suffix], &b[prefix..b.len() - suffix]);
+    // Each line as (kind, text): ' ' unchanged, '-' removed, '+' added.
+    let mut ops: Vec<(char, &str)> = a[..prefix].iter().map(|l| (' ', l.as_str())).collect();
+    if mid_a.len().saturating_mul(mid_b.len()) <= 4_000_000 {
+        // Longest common subsequence of the lines that differ.
+        let (n, m) = (mid_a.len(), mid_b.len());
+        let mut lcs = vec![vec![0u32; m + 1]; n + 1];
+        for i in (0..n).rev() {
+            for j in (0..m).rev() {
+                lcs[i][j] = if mid_a[i] == mid_b[j] {
+                    lcs[i + 1][j + 1] + 1
+                } else {
+                    lcs[i + 1][j].max(lcs[i][j + 1])
+                };
+            }
+        }
+        let (mut i, mut j) = (0, 0);
+        while i < n || j < m {
+            if i < n && j < m && mid_a[i] == mid_b[j] {
+                ops.push((' ', &mid_a[i]));
+                i += 1;
+                j += 1;
+            } else if i < n && (j == m || lcs[i + 1][j] >= lcs[i][j + 1]) {
+                // Removed lines come before the lines that replace them.
+                ops.push(('-', &mid_a[i]));
+                i += 1;
+            } else {
+                ops.push(('+', &mid_b[j]));
+                j += 1;
+            }
+        }
+    } else {
+        // Too big to compare line by line: show it as replaced.
+        ops.extend(mid_a.iter().map(|l| ('-', l.as_str())));
+        ops.extend(mid_b.iter().map(|l| ('+', l.as_str())));
+    }
+    ops.extend(a[a.len() - suffix..].iter().map(|l| (' ', l.as_str())));
+    let changed: Vec<usize> = (0..ops.len()).filter(|&i| ops[i].0 != ' ').collect();
+    let near = |i: usize| changed.iter().any(|&c| c.abs_diff(i) <= CONTEXT);
+    let mut lines = Vec::new();
+    let mut skipped = 0;
+    for (i, (kind, text)) in ops.iter().enumerate() {
+        if *kind == ' ' && !near(i) {
+            skipped += 1;
+            continue;
+        }
+        if skipped > 0 {
+            lines.push(json!({ "kind": "skip", "count": skipped }));
+            skipped = 0;
+        }
+        let kind = match kind {
+            '+' => "added",
+            '-' => "removed",
+            _ => "same",
+        };
+        lines.push(json!({ "kind": kind, "text": text }));
+    }
+    if skipped > 0 && !changed.is_empty() {
+        lines.push(json!({ "kind": "skip", "count": skipped }));
+    }
+    (lines, changed.len())
+}
+
 // ---------------------------------------------------------------------------
 // The app
 // ---------------------------------------------------------------------------
 
-const SKIP_DIRS: [&str; 8] = [
+/// Folders the scan doesn't enter unless the settings say otherwise:
+/// dependencies and build output, which never hold a project's own secrets.
+/// Hidden folders (`.git`, `.venv` …) are always skipped.
+pub const DEFAULT_SKIP_DIRS: [&str; 7] = [
     "node_modules",
-    ".git",
     "vendor",
     "dist",
     "build",
     "target",
-    ".venv",
+    "venv",
     "__pycache__",
 ];
 
-fn looks_like_env(name: &str) -> bool {
-    name != ".sops.yaml" && name.to_lowercase().split('.').any(|part| part == "env")
+/// How many folder levels below the open folder are searched, unless set.
+pub const DEFAULT_SCAN_DEPTH: u32 = 3;
+pub const MAX_SCAN_DEPTH: u32 = 10;
+/// At most this many files are listed, and at most this many folder entries
+/// looked at, so a huge folder (a home directory) can't stall the app.
+const MAX_LISTED: usize = 200;
+const MAX_SCANNED_ENTRIES: usize = 20_000;
+
+/// What the scan learned about one file, kept until its size or time changes.
+#[derive(Clone)]
+struct Seen {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    /// `None` when the file isn't a sops file.
+    found: Option<Found>,
 }
 
-fn scan(dir: &Path, depth: u32, out: &mut Vec<PathBuf>) {
+#[derive(Clone)]
+struct Found {
+    rev: String,
+    meta: Meta,
+}
+
+/// Results of earlier scans by path. Refreshing reads only files that are new
+/// or changed since, so a refresh costs about as much as listing the folders.
+#[derive(Clone, Default)]
+pub struct ScanCache(std::sync::Arc<BTreeMap<PathBuf, Seen>>);
+
+/// Everything a scan needs, copied out of the app so that it can run without
+/// holding the app's lock: opening and saving files go on meanwhile.
+pub struct ScanJob {
+    folder: PathBuf,
+    depth: u32,
+    skip: Vec<String>,
+    extra: Vec<PathBuf>,
+    cache: ScanCache,
+    git: Option<PathBuf>,
+}
+
+/// A file as the list shows it, before the keys are taken into account.
+struct Listed {
+    path: PathBuf,
+    rev: Option<String>,
+    meta: Option<Meta>,
+    /// Status and note for a file that can't be listed normally.
+    problem: Option<(&'static str, String)>,
+    drift: Option<Value>,
+}
+
+pub struct ScanResult {
+    folder: PathBuf,
+    files: Vec<Listed>,
+    states: BTreeMap<PathBuf, GitState>,
+    repos: Vec<Value>,
+    limited: bool,
+    cache: ScanCache,
+}
+
+/// Walks the folder tree. Hidden folders and the usual dependency and build
+/// folders are skipped; files go to `out` in a stable order.
+fn walk(
+    dir: &Path,
+    depth: u32,
+    skip: &[String],
+    out: &mut Vec<(PathBuf, std::fs::Metadata)>,
+    budget: &mut usize,
+) {
     let Ok(read) = std::fs::read_dir(dir) else {
         return;
     };
     let mut entries: Vec<_> = read.flatten().collect();
     entries.sort_by_key(|e| e.file_name());
     for entry in entries {
-        if out.len() >= 200 {
+        if *budget == 0 {
             return;
         }
+        *budget -= 1;
         let name = entry.file_name().to_string_lossy().into_owned();
         let path = entry.path();
-        if path.is_file() && looks_like_env(&name) {
-            out.push(path);
-        } else if path.is_dir()
+        // Follows symbolic links, like the file list always did.
+        let Ok(meta) = std::fs::metadata(&path) else {
+            continue;
+        };
+        if meta.is_file() {
+            out.push((path, meta));
+        } else if meta.is_dir()
             && depth > 0
             && !name.starts_with('.')
-            && !SKIP_DIRS.contains(&name.as_str())
+            && !skip.iter().any(|s| s == &name)
         {
-            scan(&path, depth - 1, out);
+            walk(&path, depth - 1, skip, out, budget);
         }
     }
+}
+
+/// Whether a file is worth opening at all: small enough, not empty, and not
+/// of a type that is never text.
+fn worth_reading(path: &Path, len: u64) -> bool {
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    len > 0 && len <= MAX_FILE_BYTES && !BINARY_EXTENSIONS.contains(&ext.as_str())
+}
+
+/// Reads a file and recognises it as a sops file, or not.
+fn inspect(path: &Path, len: u64) -> Option<Found> {
+    if !worth_reading(path, len) || !tail_looks_encrypted(path, len) {
+        return None;
+    }
+    let file = read_text(path).ok()?;
+    Some(Found {
+        meta: detect(&file.text)?,
+        rev: file.rev,
+    })
+}
+
+impl ScanJob {
+    pub fn run(self) -> ScanResult {
+        let mut entries = Vec::new();
+        let mut budget = MAX_SCANNED_ENTRIES;
+        walk(
+            &self.folder,
+            self.depth,
+            &self.skip,
+            &mut entries,
+            &mut budget,
+        );
+        let limited = budget == 0;
+        let mut cache = BTreeMap::new();
+        let mut files = Vec::new();
+        let mut look = |path: &Path, meta: &std::fs::Metadata| -> Option<Found> {
+            let (len, modified) = (meta.len(), meta.modified().ok());
+            let seen = match self.cache.0.get(path) {
+                Some(s) if s.len == len && s.modified == modified && modified.is_some() => {
+                    s.clone()
+                }
+                _ => Seen {
+                    len,
+                    modified,
+                    found: inspect(path, len),
+                },
+            };
+            let found = seen.found.clone();
+            cache.insert(path.to_path_buf(), seen);
+            found
+        };
+        for (path, meta) in &entries {
+            if files.len() >= MAX_LISTED {
+                break;
+            }
+            if let Some(found) = look(path, meta) {
+                files.push(Listed {
+                    drift: drift(path, &found.meta.recipients),
+                    path: path.clone(),
+                    rev: Some(found.rev),
+                    meta: Some(found.meta),
+                    problem: None,
+                });
+            }
+        }
+        // Files opened by hand stay listed, and say so when something is wrong.
+        for extra in &self.extra {
+            if files.iter().any(|f| &f.path == extra) {
+                continue;
+            }
+            let mut listed = Listed {
+                path: extra.clone(),
+                rev: None,
+                meta: None,
+                problem: None,
+                drift: None,
+            };
+            match std::fs::metadata(extra) {
+                Err(_) => listed.problem = Some(("missing", "File not found".into())),
+                Ok(meta) => match look(extra, &meta) {
+                    Some(found) => {
+                        listed.drift = drift(extra, &found.meta.recipients);
+                        listed.rev = Some(found.rev);
+                        listed.meta = Some(found.meta);
+                    }
+                    None => listed.problem = Some(("unreadable", "Not encrypted with SOPS".into())),
+                },
+            }
+            files.push(listed);
+        }
+        // Group the files by repository, then ask git once per repository.
+        let mut by_repo: BTreeMap<PathBuf, Vec<PathBuf>> = BTreeMap::new();
+        for file in &files {
+            if let Some(root) = repo_root(&file.path) {
+                by_repo.entry(root).or_default().push(file.path.clone());
+            }
+        }
+        let mut states = BTreeMap::new();
+        let mut repos = Vec::new();
+        for (root, paths) in &by_repo {
+            if let Some(found) = self
+                .git
+                .as_ref()
+                .and_then(|git| git_states(git, root, paths))
+            {
+                states.extend(found);
+            }
+            repos.push(json!({
+                "root": root.to_string_lossy(),
+                "name": root.file_name().map(|n| n.to_string_lossy().into_owned()),
+                "branch": repo_branch(root),
+            }));
+        }
+        ScanResult {
+            folder: self.folder,
+            files,
+            states,
+            repos,
+            limited,
+            cache: ScanCache(std::sync::Arc::new(cache)),
+        }
+    }
+}
+
+/// How a file's recipients differ from what its .sops.yaml rule prescribes.
+fn drift(file: &Path, recipients: &[String]) -> Option<Value> {
+    let expected = rule_recipients(file)?;
+    let missing: Vec<_> = expected
+        .iter()
+        .filter(|k| !recipients.contains(k))
+        .collect();
+    let extra: Vec<_> = recipients
+        .iter()
+        .filter(|k| !expected.contains(k))
+        .collect();
+    (!missing.is_empty() || !extra.is_empty())
+        .then(|| json!({ "missing": missing, "extra": extra }))
 }
 
 /// The newest release worth announcing to someone running `current`, from a
@@ -969,6 +1628,7 @@ pub struct App {
     /// copied (`machine_key_secret`). Held in memory only; dropped once the
     /// public key is saved as a recipient or the user discards it.
     machine_key: Option<(String, Identity)>,
+    scan_cache: ScanCache,
 }
 
 impl App {
@@ -996,6 +1656,7 @@ impl App {
             next_id: 0,
             version: env!("CARGO_PKG_VERSION").to_string(),
             machine_key: None,
+            scan_cache: ScanCache::default(),
         };
         app.remember_folder();
         app.reload_keys();
@@ -1012,6 +1673,20 @@ impl App {
     /// Sets the version of this build (from the release tag); see scripts/version.sh.
     pub fn set_version(&mut self, version: &str) {
         self.version = version.to_string();
+    }
+
+    pub fn scan_depth(&self) -> u32 {
+        self.config
+            .scan_depth
+            .unwrap_or(DEFAULT_SCAN_DEPTH)
+            .clamp(1, MAX_SCAN_DEPTH)
+    }
+
+    pub fn skip_dirs(&self) -> Vec<String> {
+        self.config
+            .skip_dirs
+            .clone()
+            .unwrap_or_else(|| DEFAULT_SKIP_DIRS.iter().map(|d| d.to_string()).collect())
     }
 
     pub fn check_updates(&self) -> bool {
@@ -1149,35 +1824,30 @@ impl App {
         })
     }
 
-    fn decrypt(&self, file: &Path) -> Res<String> {
+    /// Reads a file and its sops metadata; refuses files sops didn't encrypt.
+    fn load(&self, file: &Path) -> Res<(TextFile, Meta)> {
+        let on_disk = read_text(file).map_err(|p| p.message())?;
+        let meta = detect(&on_disk.text)
+            .ok_or("This file isn't encrypted with SOPS, so the app doesn't open it.")?;
+        Ok((on_disk, meta))
+    }
+
+    fn decrypt(&self, file: &Path, format: Format) -> Res<String> {
         let path = file.to_string_lossy();
         let mut args = vec!["decrypt"];
-        args.extend(DOTENV);
+        args.extend(format.decrypt_args());
         args.push(&path);
         let out = self.sops(&args, &[], neutral_dir().as_deref(), None)?;
-        if out.code != 0 {
-            return Err(sops_error(&out.stderr));
-        }
-        Ok(out.stdout)
+        plaintext(out)
     }
 
     /// Decrypts encrypted content that isn't on disk, such as a committed version.
-    fn decrypt_text(&self, encrypted: &str) -> Res<String> {
+    fn decrypt_text(&self, encrypted: &str, format: Format) -> Res<String> {
         let mut args = vec!["decrypt"];
-        args.extend(DOTENV);
-        args.extend(["--filename-override", "committed.env"]);
+        args.extend(format.decrypt_args());
+        args.extend(["--filename-override", "committed"]);
         let out = self.sops(&args, &[], neutral_dir().as_deref(), Some(encrypted))?;
-        if out.code != 0 {
-            return Err(sops_error(&out.stderr));
-        }
-        Ok(out.stdout)
-    }
-
-    /// Encrypts plaintext from stdin and writes the result to `file`.
-    /// With `recipients == None` the matching .sops.yaml rule decides.
-    fn encrypt_to(&self, file: &Path, plaintext: &str, recipients: Option<&[String]>) -> Res<()> {
-        let encrypted = self.encrypt_text(file, plaintext, recipients)?;
-        std::fs::write(file, encrypted).map_err(io_msg)
+        plaintext(out)
     }
 
     /// Encrypts plaintext from stdin as if it were `file`, which needn't exist.
@@ -1186,7 +1856,9 @@ impl App {
         &self,
         file: &Path,
         plaintext: &str,
+        format: Format,
         recipients: Option<&[String]>,
+        options: &[(&'static str, String)],
     ) -> Res<String> {
         let path = file.to_string_lossy();
         let joined = recipients.map(|r| r.join(","));
@@ -1194,7 +1866,10 @@ impl App {
         if let Some(list) = &joined {
             args.extend(["--age", list.as_str()]);
         }
-        args.extend(DOTENV);
+        for (flag, value) in options {
+            args.extend([*flag, value.as_str()]);
+        }
+        args.extend(format.encrypt_args());
         args.extend(["--filename-override", &path]);
         let neutral = neutral_dir();
         let cwd = if recipients.is_some() {
@@ -1209,6 +1884,32 @@ impl App {
         Ok(out.stdout)
     }
 
+    /// Encrypts the whole file again for `recipients`, keeping the options
+    /// recorded in its metadata (which values are encrypted). Only the result
+    /// is written, after sops succeeded.
+    fn reencrypt(
+        &self,
+        file: &Path,
+        meta: &Meta,
+        plaintext: &str,
+        recipients: &[String],
+    ) -> Res<()> {
+        if let Some(problem) = meta.reencrypt_problem() {
+            return Err(problem);
+        }
+        if recipients.is_empty() {
+            return Err("A file needs at least one recipient.".into());
+        }
+        let encrypted = self.encrypt_text(
+            file,
+            plaintext,
+            meta.format,
+            Some(recipients),
+            &meta.options,
+        )?;
+        std::fs::write(file, encrypted).map_err(io_msg)
+    }
+
     /// Where a new file would go, after checking the folder and name. Nothing
     /// is written; `create` does that once there is content to encrypt.
     fn new_file_path(&self, dir: &str, name: &str) -> Res<PathBuf> {
@@ -1220,9 +1921,6 @@ impl App {
         if name.is_empty() || name.contains(['/', '\\']) || name == "." || name == ".." {
             return Err("Enter a file name without folders, such as .env.production.".into());
         }
-        if !looks_like_env(name) {
-            return Err("Use a name with env in it, such as .env.production or prod.env, so the app lists it.".into());
-        }
         let path = dir.join(name);
         if path.exists() {
             return Err(
@@ -1233,23 +1931,38 @@ impl App {
         Ok(path)
     }
 
-    /// Creates a new encrypted env file. The content goes to sops through
-    /// stdin and only the encrypted result is written, to a file that must
-    /// not exist yet: an existing file is never replaced.
+    /// Turns what the UI sends into the plaintext sops gets for `format`.
+    fn plaintext_for(format: Format, content: &Content) -> Res<String> {
+        match (format.is_env(), content) {
+            (true, Content::Items(items)) => {
+                if !items.iter().any(|i| matches!(i, Item::Kv { .. })) {
+                    return Err("Add at least one variable.".into());
+                }
+                serialize_env(items)
+            }
+            (false, Content::Text(text)) if text.trim().is_empty() => {
+                Err("Enter the file's content.".into())
+            }
+            (false, Content::Text(text)) => Ok(text.clone()),
+            _ => Err("The file content couldn't be read.".into()),
+        }
+    }
+
+    /// Creates a new encrypted file. The content goes to sops through stdin
+    /// and only the encrypted result is written, to a file that must not
+    /// exist yet: an existing file is never replaced.
     fn create_file(
         &mut self,
         dir: &str,
         name: &str,
-        items: &[Item],
+        content: &Content,
         recipients: &[String],
     ) -> Res<PathBuf> {
         let path = self.new_file_path(dir, name)?;
-        if !items.iter().any(|i| matches!(i, Item::Kv { .. })) {
-            return Err("Add at least one variable.".into());
-        }
-        let plaintext = serialize_env(items)?;
+        let format = format_for_name(name.trim());
+        let plaintext = Self::plaintext_for(format, content)?;
         let encrypted = match rule_recipients(&path) {
-            Some(_) => self.encrypt_text(&path, &plaintext, None)?,
+            Some(_) => self.encrypt_text(&path, &plaintext, format, None, &[])?,
             None if recipients.is_empty() => {
                 return Err("Choose at least one recipient to encrypt for.".into())
             }
@@ -1257,7 +1970,7 @@ impl App {
                 if recipients.iter().any(|k| !valid_public_key(k)) {
                     return Err("That isn't a valid age public key.".into());
                 }
-                self.encrypt_text(&path, &plaintext, Some(recipients))?
+                self.encrypt_text(&path, &plaintext, format, Some(recipients), &[])?
             }
         };
         let mut file = std::fs::OpenOptions::new()
@@ -1280,39 +1993,67 @@ impl App {
         Ok(path)
     }
 
-    /// Saves the variables to `file`. `opened_rev` is the fingerprint the file
-    /// had when the UI loaded it; if the file has changed since (a `git pull`,
-    /// another editor), nothing is written and `Ok(false)` reports the
-    /// conflict, unless `overwrite` says the user confirmed.
+    /// Saves new content to an encrypted file. `opened_rev` is the fingerprint
+    /// the file had when the UI loaded it; if the file has changed since (a
+    /// `git pull`, another editor), nothing is written and `Ok(false)` reports
+    /// the conflict, unless `overwrite` says the user confirmed.
     fn save_file(
         &self,
         file: &Path,
-        items: &[Item],
-        recipients: &[String],
+        content: &Content,
         opened_rev: Option<&str>,
         overwrite: bool,
     ) -> Res<bool> {
-        let plaintext = serialize_env(items)?;
-        let on_disk = read_text(file).map_err(|p| p.message())?;
+        let (on_disk, meta) = self.load(file)?;
+        let plaintext = Self::plaintext_for(meta.format, content)?;
         if !overwrite && opened_rev.is_some_and(|rev| rev != on_disk.rev) {
             return Ok(false);
         }
-        let current = on_disk.text;
-        if !is_encrypted(&current) {
-            return match rule_recipients(file) {
-                Some(_) => self.encrypt_to(file, &plaintext, None),
-                None if recipients.is_empty() => {
-                    Err("Choose at least one recipient to encrypt for.".into())
-                }
-                None => self.encrypt_to(file, &plaintext, Some(recipients)),
+        let path = file.to_string_lossy();
+        let neutral = neutral_dir();
+        let before = self.decrypt(file, meta.format)?;
+        // Every step goes through stdin, so nothing decrypted touches the disk
+        // (`sops edit` would write a temp file). If one fails, the file gets
+        // back exactly the bytes it had.
+        let set = |index: &str, value: &str| -> Res<()> {
+            // sops expects the value JSON-encoded.
+            let value = serde_json::to_string(value).map_err(|e| e.to_string())?;
+            let mut args = vec!["set", "--value-stdin"];
+            args.extend(meta.format.store_args());
+            args.extend([&*path, index]);
+            let out = self.sops(&args, &[], neutral.as_deref(), Some(&value))?;
+            if out.code == 0 {
+                Ok(())
+            } else {
+                Err(sops_error(&out.stderr))
             }
-            .map(|()| true);
+        };
+        let restore_on_error = |result: Res<()>| {
+            if result.is_err() {
+                let _ = std::fs::write(file, &on_disk.bytes);
+            }
+            result.map(|()| true)
+        };
+        if !meta.format.is_env() {
+            // A textarea turns Windows line endings into \n; keep the file's own.
+            let text = if before.contains("\r\n") && !plaintext.contains("\r\n") {
+                plaintext.replace('\n', "\r\n")
+            } else {
+                plaintext
+            };
+            if text == before {
+                return Ok(true);
+            }
+            if meta.format.whole {
+                // One value: replace it in place, which keeps every key and option.
+                return restore_on_error(set("[\"data\"]", &text));
+            }
+            return self
+                .reencrypt(file, &meta, &text, &meta.recipients)
+                .map(|()| true);
         }
-        // Change the encrypted file one variable at a time. Each value reaches
-        // sops through stdin, so nothing decrypted touches the disk (`sops edit`
-        // would write a temp file), and untouched variables keep their
-        // ciphertext, which keeps Git diffs small.
-        let before = self.decrypt(file)?;
+        // Change an env file one variable at a time. Untouched variables keep
+        // their ciphertext, which keeps Git diffs small.
         let (changes, _) = env_changes(&before, &plaintext);
         if changes.is_empty() {
             return Ok(true);
@@ -1323,44 +2064,26 @@ impl App {
             .iter()
             .any(|c| key(c).contains(['[', ']', '\'', '"']))
         {
-            let recipients = file_recipients(&current);
-            if recipients.is_empty() {
-                return Err(
-                    "This file isn't encrypted for an age key, so it can't be saved here.".into(),
-                );
-            }
             return self
-                .encrypt_to(file, &plaintext, Some(&recipients))
+                .reencrypt(file, &meta, &plaintext, &meta.recipients)
                 .map(|()| true);
         }
-        let path = file.to_string_lossy();
-        let neutral = neutral_dir();
         let applied = changes.iter().try_for_each(|change| {
             let index = format!("['{}']", key(change));
-            let out = if change["kind"] == "removed" {
+            if change["kind"] == "removed" {
                 let mut args = vec!["unset"];
-                args.extend(DOTENV);
+                args.extend(meta.format.store_args());
                 args.extend([&*path, index.as_str()]);
-                self.sops(&args, &[], neutral.as_deref(), None)?
-            } else {
-                // sops expects the value JSON-encoded.
-                let value = serde_json::to_string(&change["new"]).map_err(|e| e.to_string())?;
-                let mut args = vec!["set", "--value-stdin"];
-                args.extend(DOTENV);
-                args.extend([&*path, index.as_str()]);
-                self.sops(&args, &[], neutral.as_deref(), Some(&value))?
-            };
-            if out.code == 0 {
-                Ok(())
-            } else {
-                Err(sops_error(&out.stderr))
+                let out = self.sops(&args, &[], neutral.as_deref(), None)?;
+                return if out.code == 0 {
+                    Ok(())
+                } else {
+                    Err(sops_error(&out.stderr))
+                };
             }
+            set(&index, change["new"].as_str().unwrap_or(""))
         });
-        if applied.is_err() {
-            // Don't leave the file half-changed: put back exactly what was there.
-            let _ = std::fs::write(file, &on_disk.bytes);
-        }
-        applied.map(|()| true)
+        restore_on_error(applied)
     }
 
     fn set_recipients(&self, file: &Path, recipients: &[String]) -> Res<()> {
@@ -1370,119 +2093,77 @@ impl App {
         if recipients.iter().any(|k| !valid_public_key(k)) {
             return Err("That isn't a valid age public key.".into());
         }
-        let plaintext = self.decrypt(file)?;
-        self.encrypt_to(file, &plaintext, Some(recipients))
+        let (_, meta) = self.load(file)?;
+        let plaintext = self.decrypt(file, meta.format)?;
+        self.reencrypt(file, &meta, &plaintext, recipients)
     }
 
     // ---- views -----------------------------------------------------------
 
-    fn describe_file(&self, file: &Path, root: Option<&Path>, git: Option<GitState>) -> Value {
-        let path = file.to_string_lossy();
+    fn describe_file(&self, file: &Listed, git: Option<GitState>) -> Value {
+        let path = file.path.to_string_lossy();
+        let root = repo_root(&file.path);
         let name = file
+            .path
             .strip_prefix(&self.folder)
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|_| path.to_string());
-        let read = read_text(file);
         let mut info = json!({
             "path": path,
             "name": name,
             // Fingerprint of the bytes on disk; the UI compares it with the open
             // file's to notice changes made outside the app, such as a git pull.
-            "rev": read.as_ref().ok().map(|f| f.rev.clone()),
-            "repo": root.map(|r| r.to_string_lossy().into_owned()),
+            "rev": file.rev,
+            "repo": root.as_ref().map(|r| r.to_string_lossy().into_owned()),
             // Path inside the repository; the file list groups by it.
-            "rel": root.and_then(|r| file.strip_prefix(r).ok()).map(|p| p.to_string_lossy().into_owned()),
+            "rel": root.as_ref().and_then(|r| file.path.strip_prefix(r).ok()).map(|p| p.to_string_lossy().into_owned()),
             "git": git.map(GitState::as_str),
+            "format": file.meta.as_ref().map(|m| m.format.name()),
         });
         let mut set = |status: &str, note: &str| {
             info["status"] = json!(status);
             info["note"] = json!(note);
         };
-        let text = match read {
-            Ok(file) => file.text,
-            Err(ReadProblem::Missing) => {
-                set("missing", "File not found");
-                return info;
-            }
-            Err(ReadProblem::Unreadable(why)) => {
-                set("unreadable", &why);
-                return info;
-            }
-        };
-        if !is_encrypted(&text) {
-            let base = file
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            match git {
-                _ if is_template(&base) => set("plain", "Example file, plaintext by design"),
-                Some(state) if state.tracked() => {
-                    set("plain-tracked", "Plaintext and committed to Git")
-                }
-                Some(GitState::New) => set("plain-risk", "Plaintext and not ignored by Git"),
-                Some(GitState::Ignored) => set("plain", "Plaintext, ignored by Git"),
-                _ => set("plain", "Plaintext"),
-            }
+        let Some(meta) = &file.meta else {
+            let (status, note) = file
+                .problem
+                .clone()
+                .unwrap_or(("unreadable", String::new()));
+            set(status, &note);
             return info;
-        }
-        let recipients = file_recipients(&text);
-        let drift = rule_recipients(file).and_then(|expected| {
-            let missing: Vec<_> = expected
-                .iter()
-                .filter(|k| !recipients.contains(k))
-                .cloned()
-                .collect();
-            let extra: Vec<_> = recipients
-                .iter()
-                .filter(|k| !expected.contains(k))
-                .cloned()
-                .collect();
-            (!missing.is_empty() || !extra.is_empty())
-                .then(|| json!({ "missing": missing, "extra": extra }))
-        });
-        match recipients.iter().find_map(|r| self.label_for(r)) {
+        };
+        match meta.recipients.iter().find_map(|r| self.label_for(r)) {
             Some(label) => set("ok", &format!("Opens with {label}")),
             None => set("locked", "No matching key"),
         }
-        info["recipients"] = json!(recipients);
-        info["drift"] = json!(drift);
+        info["recipients"] = json!(meta.recipients);
+        info["drift"] = json!(file.drift);
         info
     }
 
-    fn state(&self) -> Value {
-        let mut found = Vec::new();
-        scan(&self.folder, 3, &mut found);
-        for extra in &self.extra_files {
-            if !found.contains(extra) {
-                found.push(extra.clone());
-            }
+    /// What a scan needs, to run without the app's lock (see `ScanJob`).
+    pub fn scan_job(&self) -> ScanJob {
+        ScanJob {
+            folder: self.folder.clone(),
+            depth: self.scan_depth(),
+            skip: self.skip_dirs(),
+            extra: self.extra_files.clone(),
+            cache: self.scan_cache.clone(),
+            git: self.git.clone(),
         }
-        // Group the files by repository, then ask git once per repository.
-        let mut by_repo: BTreeMap<PathBuf, Vec<PathBuf>> = BTreeMap::new();
-        for file in &found {
-            if let Some(root) = repo_root(file) {
-                by_repo.entry(root).or_default().push(file.clone());
-            }
+    }
+
+    /// The app's state from a finished scan. A scan of a folder that is no
+    /// longer the open one is done again.
+    pub fn finish_scan(&mut self, scan: ScanResult) -> Value {
+        if scan.folder != self.folder {
+            return self.state();
         }
-        let mut states: BTreeMap<PathBuf, GitState> = BTreeMap::new();
-        let mut repos = Vec::new();
-        for (root, files) in &by_repo {
-            if let Some(found) = self
-                .git
-                .as_ref()
-                .and_then(|git| git_states(git, root, files))
-            {
-                states.extend(found);
-            }
-            repos.push(json!({
-                "root": root.to_string_lossy(),
-                "name": root.file_name().map(|n| n.to_string_lossy().into_owned()),
-                "branch": repo_branch(root),
-            }));
-        }
-        let files: Vec<Value> = found
+        self.scan_cache = scan.cache;
+        let files: Vec<Value> = scan
+            .files
             .iter()
-            .map(|f| self.describe_file(f, repo_root(f).as_deref(), states.get(f).copied()))
+            .map(|f| self.describe_file(f, scan.states.get(&f.path).copied()))
             .collect();
         let keys: Vec<Value> = self
             .key_sources
@@ -1501,7 +2182,9 @@ impl App {
             "appDir": self.bundled_dirs.first().map(|d| d.to_string_lossy().into_owned()),
             "defaultKeyPath": default_key_path().to_string_lossy(),
             "files": files,
-            "repos": repos,
+            // True when the scan stopped early because the folder is huge.
+            "scanLimited": scan.limited,
+            "repos": scan.repos,
             // False when git isn't installed: repositories are still shown, without status.
             "git": self.git.is_some(),
             "recent": self.config.recent.iter().filter(|f| Path::new(f).is_dir()).collect::<Vec<_>>(),
@@ -1511,34 +2194,45 @@ impl App {
             "settings": {
                 "clipboardClearSeconds": self.clipboard_clear_seconds(),
                 "checkUpdates": self.check_updates(),
+                "scanDepth": self.scan_depth(),
+                "skipDirs": self.skip_dirs(),
+                "defaultSkipDirs": DEFAULT_SKIP_DIRS,
             },
         })
     }
 
+    fn state(&mut self) -> Value {
+        let scan = self.scan_job().run();
+        self.finish_scan(scan)
+    }
+
     fn open_file(&self, file: &Path) -> Res<Value> {
-        let on_disk = read_text(file).map_err(|p| p.message())?;
-        let text = &on_disk.text;
-        // Named only when it isn't plain UTF-8, so the UI can say what will change on saving.
-        let encoding = (on_disk.encoding != "UTF-8").then_some(on_disk.encoding);
-        if !is_encrypted(text) {
-            return Ok(json!({
-                "encrypted": false, "items": parse_env(text), "recipients": [],
-                "hasRule": rule_recipients(file).is_some(),
-                "rev": on_disk.rev, "encoding": encoding,
-            }));
-        }
-        let plaintext = self.decrypt(file)?;
-        let recipients: Vec<Value> = file_recipients(text)
+        let (on_disk, meta) = self.load(file)?;
+        let plaintext = self.decrypt(file, meta.format)?;
+        let recipients: Vec<Value> = meta
+            .recipients
             .iter()
             .map(|k| json!({ "key": k, "name": self.name_for(k), "mine": self.label_for(k).is_some() }))
             .collect();
-        Ok(json!({
-            "encrypted": true, "items": parse_env(&plaintext), "recipients": recipients, "hasRule": true,
-            "rev": on_disk.rev, "encoding": encoding,
-        }))
+        let mut opened = json!({
+            "format": meta.format.name(),
+            "kind": if meta.format.is_env() { "env" } else { "text" },
+            "recipients": recipients,
+            "rev": on_disk.rev,
+            // Why the file can't be encrypted again here (changing recipients,
+            // saving a YAML, JSON or INI file), or null.
+            "reencrypt": meta.reencrypt_problem(),
+        });
+        if meta.format.is_env() {
+            opened["items"] = json!(parse_env(&plaintext));
+        } else {
+            opened["text"] = json!(plaintext);
+        }
+        Ok(opened)
     }
 
-    /// Compares the file on disk with its last committed version, decrypted.
+    /// Compares the file on disk with its last committed version, decrypted:
+    /// by variable for env files, by line for everything else.
     fn changes(&self, file: &Path) -> Res<Value> {
         let root = repo_root(file).ok_or("This file isn't in a Git repository.")?;
         let git = self
@@ -1546,43 +2240,27 @@ impl App {
             .as_ref()
             .ok_or("Git isn't installed, so there's no committed version to compare with.")?;
         let rel = repo_relative(&root, file).ok_or("This file isn't in a Git repository.")?;
-        let on_disk = read_text(file).map_err(|p| p.message())?.text;
-        let current = if is_encrypted(&on_disk) {
-            self.decrypt(file)?
-        } else {
-            on_disk
-        };
         let shown =
             git_read(git, &root, &["show", &format!("HEAD:{rel}")]).map_err(|e| e.to_string())?;
         // A failing `git show` means the file has never been committed.
         let committed = shown.code == 0;
-        let before = match (committed, is_encrypted(&shown.stdout)) {
+        let (_, meta) = self.load(file)?;
+        let current = self.decrypt(file, meta.format)?;
+        let before = match (committed, detect(&shown.stdout)) {
             (false, _) => String::new(),
-            (true, false) => shown.stdout,
-            (true, true) => self
-                .decrypt_text(&shown.stdout)
+            (true, None) => shown.stdout,
+            (true, Some(old)) => self
+                .decrypt_text(&shown.stdout, old.format)
                 .map_err(|e| format!("The committed version couldn't be decrypted. {e}"))?,
         };
-        let (changes, unchanged) = env_changes(&before, &current);
-        Ok(json!({ "committed": committed, "changes": changes, "unchanged": unchanged }))
-    }
-
-    /// Adds the file to its repository's .gitignore. Needs no git binary.
-    fn ignore(&self, file: &Path) -> Res<()> {
-        let root = repo_root(file).ok_or("This file isn't in a Git repository.")?;
-        let rel = repo_relative(&root, file).ok_or("This file isn't in a Git repository.")?;
-        let path = root.join(".gitignore");
-        let mut text = std::fs::read_to_string(&path).unwrap_or_default();
-        let line = format!("/{rel}");
-        if text.lines().any(|l| l.trim() == line) {
-            return Ok(());
+        if meta.format.is_env() {
+            let (changes, unchanged) = env_changes(&before, &current);
+            return Ok(
+                json!({ "committed": committed, "kind": "env", "changes": changes, "unchanged": unchanged }),
+            );
         }
-        if !text.is_empty() && !text.ends_with('\n') {
-            text.push('\n');
-        }
-        text.push_str(&line);
-        text.push('\n');
-        std::fs::write(path, text).map_err(io_msg)
+        let (lines, changed) = text_changes(&before, &current);
+        Ok(json!({ "committed": committed, "kind": "text", "lines": lines, "changed": changed }))
     }
 
     // ---- actions ---------------------------------------------------------
@@ -1611,6 +2289,7 @@ impl App {
                 self.config.last_folder = Some(path.to_string_lossy().into_owned());
                 self.folder = path;
                 self.extra_files.clear();
+                self.scan_cache = ScanCache::default();
                 self.remember_folder();
                 self.save_config()?;
                 Ok(self.state())
@@ -1618,17 +2297,19 @@ impl App {
 
             "checkNewFile" => {
                 let path = self.new_file_path(&text("dir"), &text("name"))?;
-                Ok(
-                    json!({ "path": path.to_string_lossy(), "hasRule": rule_recipients(&path).is_some() }),
-                )
+                let format = format_for_name(text("name").trim());
+                Ok(json!({
+                    "path": path.to_string_lossy(),
+                    "hasRule": rule_recipients(&path).is_some(),
+                    "format": format.name(),
+                    "kind": if format.is_env() { "env" } else { "text" },
+                }))
             }
 
             "create" => {
-                let items: Vec<Item> =
-                    serde_json::from_value(body.get("items").cloned().unwrap_or(Value::Null))
-                        .map_err(|_| "The file content couldn't be read.".to_string())?;
+                let content = Content::from_body(body)?;
                 let path =
-                    self.create_file(&text("dir"), &text("name"), &items, &list("recipients"))?;
+                    self.create_file(&text("dir"), &text("name"), &content, &list("recipients"))?;
                 Ok(
                     json!({ "state": self.state(), "file": self.open_file(&path)?, "path": path.to_string_lossy() }),
                 )
@@ -1639,6 +2320,7 @@ impl App {
                 if !path.is_file() {
                     return Err("That isn't a file.".into());
                 }
+                self.load(&path)?;
                 if !self.extra_files.contains(&path) {
                     self.extra_files.push(path);
                 }
@@ -1649,21 +2331,14 @@ impl App {
 
             "changes" => self.changes(&file()),
 
-            "ignore" => {
-                self.ignore(&file())?;
-                Ok(self.state())
-            }
-
             "save" => {
-                let items: Vec<Item> =
-                    serde_json::from_value(body.get("items").cloned().unwrap_or(Value::Null))
-                        .map_err(|_| "The file content couldn't be read.".to_string())?;
+                let content = Content::from_body(body)?;
                 let rev = body.get("rev").and_then(Value::as_str);
                 let overwrite = body
                     .get("overwrite")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
-                if !self.save_file(&file(), &items, &list("recipients"), rev, overwrite)? {
+                if !self.save_file(&file(), &content, rev, overwrite)? {
                     // The UI asks the user whether to overwrite, then sends the save again.
                     return Ok(json!({ "conflict": true }));
                 }
@@ -1836,6 +2511,27 @@ impl App {
                 if let Some(on) = body.get("checkUpdates") {
                     self.config.check_updates = Some(on.as_bool().ok_or("Choose on or off.")?);
                 }
+                if let Some(depth) = body.get("scanDepth") {
+                    let depth = depth
+                        .as_u64()
+                        .filter(|d| (1..=u64::from(MAX_SCAN_DEPTH)).contains(d))
+                        .ok_or("Choose a depth from 1 to 10.")?;
+                    self.config.scan_depth = Some(depth as u32);
+                }
+                if let Some(dirs) = body.get("skipDirs") {
+                    let dirs: Vec<String> = serde_json::from_value::<Vec<String>>(dirs.clone())
+                        .map_err(|_| "Enter folder names separated by commas.".to_string())?
+                        .iter()
+                        .map(|d| d.trim().to_string())
+                        .filter(|d| !d.is_empty())
+                        .collect();
+                    if dirs.iter().any(|d| d.contains(['/', '\\'])) {
+                        return Err("Enter folder names, not paths, such as node_modules.".into());
+                    }
+                    let defaults: Vec<String> =
+                        DEFAULT_SKIP_DIRS.iter().map(|d| d.to_string()).collect();
+                    self.config.skip_dirs = (dirs != defaults).then_some(dirs);
+                }
                 self.save_config()?;
                 Ok(self.state())
             }
@@ -1860,6 +2556,13 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What sops writes for an env file, close enough for recognising it:
+    /// the app finds files without needing sops or a key.
+    const FAKE_ENCRYPTED: &str = "A=ENC[AES256_GCM,data:YQ==,iv:aXY=,tag:dGFn,type:str]\n\
+        sops_age__list_0__map_recipient=age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq\n\
+        sops_mac=ENC[AES256_GCM,data:bWFj,iv:aXY=,tag:dGFn,type:str]\n\
+        sops_version=3.13.3\n";
 
     #[test]
     fn env_round_trip_keeps_comments_and_equals_signs() {
@@ -1890,7 +2593,7 @@ mod tests {
     }
 
     #[test]
-    fn env_file_names() {
+    fn formats_for_new_file_names() {
         for name in [
             ".env",
             ".env.prod",
@@ -1898,11 +2601,176 @@ mod tests {
             ".env.prod.enc",
             "Secrets.ENV",
         ] {
-            assert!(looks_like_env(name), "{name}");
+            assert_eq!(format_for_name(name), Format::DOTENV, "{name}");
         }
-        for name in [".envrc", "environment.txt", ".sops.yaml"] {
-            assert!(!looks_like_env(name), "{name}");
+        let store = |name: &str| format_for_name(name).store;
+        assert_eq!(store("config.enc.yaml"), Store::Yaml);
+        assert_eq!(store("x.YML"), Store::Yaml);
+        assert_eq!(store("secrets.env.json"), Store::Json);
+        assert_eq!(store("db.ini"), Store::Ini);
+        for name in ["valkey-users.enc.acl", ".envrc", "notes", "id_rsa"] {
+            assert_eq!(format_for_name(name), Format::BINARY, "{name}");
         }
+    }
+
+    /// Files are recognised by their sops metadata, whatever their name.
+    #[test]
+    fn recognises_sops_files_by_content() {
+        let mac = "ENC[AES256_GCM,data:x,iv:y,tag:z,type:str]";
+        let age = |key: &str| format!("        - recipient: {key}\n          enc: x\n");
+        let yaml = format!(
+            "db:\n    password: ENC[AES256_GCM,data:a,iv:b,tag:c,type:str]\nsops:\n    age:\n{}{}    mac: {mac}\n    encrypted_regex: ^password$\n    version: 3.13.3\n",
+            age("age1aaa"),
+            age("age1bbb")
+        );
+        let m = detect(&yaml).unwrap();
+        assert_eq!(
+            m.format,
+            Format {
+                store: Store::Yaml,
+                whole: false
+            }
+        );
+        assert_eq!(m.recipients, ["age1aaa", "age1bbb"]);
+        assert_eq!(m.options, [("--encrypted-regex", "^password$".to_string())]);
+        assert!(!m.other_keys && m.cant_keep.is_none());
+
+        let json = format!(
+            r#"{{"data": "ENC[x]", "sops": {{"age": [{{"recipient": "age1ccc"}}], "pgp": [{{"fp": "AB"}}], "mac": "{mac}", "unencrypted_suffix": "_unencrypted"}}}}"#
+        );
+        let m = detect(&json).unwrap();
+        assert_eq!(m.format, Format::BINARY);
+        assert!(m.other_keys && m.reencrypt_problem().unwrap().contains("PGP"));
+        assert_eq!(
+            m.options,
+            [("--unencrypted-suffix", "_unencrypted".to_string())]
+        );
+        let json = json.replace(r#""data""#, r#""other": 1, "data""#);
+        assert_eq!(detect(&json).unwrap().format.store, Store::Json);
+        assert!(!detect(&json).unwrap().format.whole);
+
+        let ini = format!("[db]\npass = ENC[x]\n\n[sops]\nage__list_0__map_recipient = age1ddd\nmac = {mac}\nmac_only_encrypted = true\n");
+        let m = detect(&ini).unwrap();
+        assert_eq!(
+            (m.format.store, m.recipients.clone()),
+            (Store::Ini, vec!["age1ddd".to_string()])
+        );
+        assert!(m
+            .reencrypt_problem()
+            .unwrap()
+            .contains("mac_only_encrypted"));
+
+        let env = format!("A=ENC[x]\nsops_age__list_0__map_recipient=age1eee\nsops_key_groups__list_0__age__list_0__map_recipient=age1fff\nsops_mac={mac}\nsops_version=3.13.3\n");
+        let m = detect(&env).unwrap();
+        assert_eq!(m.format, Format::DOTENV);
+        assert_eq!(m.recipients, ["age1eee", "age1fff"]);
+        let data = format!("data=ENC[x]\nsops_mac={mac}\n");
+        assert_eq!(
+            detect(&data).unwrap().format,
+            Format {
+                store: Store::Dotenv,
+                whole: true
+            }
+        );
+
+        // Mentioning sops isn't enough.
+        for text in [
+            "A=1\nB=2\n",
+            "sops:\n  note: not encrypted\n",
+            r#"{"sops": {"version": "3"}}"#,
+            "[sops]\nversion = 3\n",
+            "# sops_mac=nothing\n",
+            "",
+        ] {
+            assert!(detect(text).is_none(), "{text}");
+        }
+    }
+
+    #[test]
+    fn text_changes_by_line() {
+        let old = "a\nb\nc\nd\ne\nf\ng\nh\n";
+        let new = "a\nb\nc\nd\nE\nf\ng\nh\nI\n";
+        let (lines, changed) = text_changes(old, new);
+        let shape: Vec<String> = lines
+            .iter()
+            .map(|l| match l["kind"].as_str().unwrap() {
+                "skip" => format!("…{}", l["count"]),
+                "added" => format!("+{}", l["text"].as_str().unwrap()),
+                "removed" => format!("-{}", l["text"].as_str().unwrap()),
+                _ => format!(" {}", l["text"].as_str().unwrap()),
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            ["…2", " c", " d", "-e", "+E", " f", " g", " h", "+I"]
+        );
+        assert_eq!(changed, 3);
+        let (lines, changed) = text_changes("same\r\n", "same\n");
+        assert!(
+            lines.is_empty() && changed == 0,
+            "line endings alone aren't a change"
+        );
+        let (lines, _) = text_changes("", "new\n");
+        assert_eq!(lines, [json!({ "kind": "added", "text": "new" })]);
+    }
+
+    /// The scan stops after a fixed number of folder entries and says so.
+    #[test]
+    fn scan_skips_folders_and_stops_in_huge_folders() {
+        let root = std::env::temp_dir().join(format!("open-sops-ui-walk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for dir in ["a/b/c", "node_modules/x", ".hidden", "keep"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        for file in [
+            "top",
+            "a/one",
+            "a/b/two",
+            "a/b/c/three",
+            "node_modules/x/dep",
+            ".hidden/h",
+            "keep/k",
+        ] {
+            std::fs::write(root.join(file), "x").unwrap();
+        }
+        let names = |depth: u32, skip: &[&str], budget: usize| {
+            let skip: Vec<String> = skip.iter().map(|s| s.to_string()).collect();
+            let (mut out, mut left) = (Vec::new(), budget);
+            walk(&root, depth, &skip, &mut out, &mut left);
+            let mut names: Vec<String> = out
+                .iter()
+                .map(|(p, _)| p.file_name().unwrap().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            (names, left == 0)
+        };
+        assert_eq!(
+            names(3, &["node_modules"], 1000),
+            (
+                vec![
+                    "k".into(),
+                    "one".into(),
+                    "three".into(),
+                    "top".into(),
+                    "two".into()
+                ],
+                false
+            )
+        );
+        assert_eq!(names(1, &["node_modules"], 1000).0, ["k", "one", "top"]);
+        assert!(
+            names(3, &[], 1000).0.contains(&"dep".to_string()),
+            "the skip list is the caller's"
+        );
+        assert!(
+            names(3, &[], 1000).0.iter().all(|n| n != "h"),
+            "hidden folders are always skipped"
+        );
+        assert!(
+            names(3, &[], 3).1,
+            "a scan that runs out of entries says so"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1936,22 +2804,6 @@ mod tests {
         assert_eq!(unchanged, 1);
     }
 
-    #[test]
-    fn template_names() {
-        for name in [
-            ".env.example",
-            "sample.env",
-            ".env.template",
-            ".env.dist",
-            ".ENV.Example",
-        ] {
-            assert!(is_template(name), "{name}");
-        }
-        for name in [".env", ".env.production", "examples.env"] {
-            assert!(!is_template(name), "{name}");
-        }
-    }
-
     /// Git is optional: without the binary, repositories are still found and
     /// named from the file system, and everything else keeps working.
     #[test]
@@ -1966,8 +2818,9 @@ mod tests {
             "ref: refs/heads/feature/login\n",
         )
         .unwrap();
-        std::fs::write(repo.join("api").join(".env"), "A=1\n").unwrap();
-        std::fs::write(root.join("loose.env"), "B=2\n").unwrap();
+        std::fs::write(repo.join("api").join(".env"), FAKE_ENCRYPTED).unwrap();
+        std::fs::write(repo.join("plain.env"), "B=2\n").unwrap();
+        std::fs::write(root.join("loose.env"), FAKE_ENCRYPTED).unwrap();
         let file = repo.join("api").join(".env");
 
         assert_eq!(repo_root(&file), Some(repo.clone()));
@@ -1987,7 +2840,16 @@ mod tests {
             .unwrap();
         assert_eq!(in_repo["repo"], repo.to_string_lossy().as_ref());
         assert!(in_repo["git"].is_null());
-        assert_eq!(in_repo["status"], "plain");
+        assert_eq!(in_repo["status"], "locked");
+        assert_eq!(in_repo["format"], "dotenv");
+        assert!(
+            state["files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|f| f["name"] != "shop/plain.env"),
+            "plaintext files aren't listed"
+        );
         if repo_root(&root).is_none() {
             assert_eq!(state["repos"].as_array().unwrap().len(), 1);
             assert_eq!(state["repos"][0]["branch"], "feature/login");
@@ -1996,13 +2858,6 @@ mod tests {
             .changes(&file)
             .unwrap_err()
             .contains("Git isn't installed"));
-        // Opening and ignoring need no git either.
-        assert_eq!(app.open_file(&file).unwrap()["items"][0]["k"], "A");
-        app.ignore(&file).unwrap();
-        assert_eq!(
-            std::fs::read_to_string(repo.join(".gitignore")).unwrap(),
-            "/api/.env\n"
-        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -2019,7 +2874,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let repo = root.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
-        std::fs::write(repo.join(".env"), "A=1\n").unwrap();
+        std::fs::write(repo.join(".env"), FAKE_ENCRYPTED).unwrap();
         let marker = root.join("EXECUTED");
         let trap = format!(
             "touch '{}'; false",
@@ -2042,7 +2897,7 @@ mod tests {
         }
         std::fs::remove_file(&marker).unwrap();
 
-        let app = App::new(Some(root.clone()), vec![]);
+        let mut app = App::new(Some(root.clone()), vec![]);
         let state = app.state();
         let listed = state["files"]
             .as_array()
@@ -2050,7 +2905,8 @@ mod tests {
             .iter()
             .any(|f| f["git"] == "new");
         assert!(listed, "the file's Git status is still reported");
-        assert!(app.changes(&repo.join(".env")).is_ok());
+        // Runs `git show` first; decrypting may then fail, there's no key.
+        let _ = app.changes(&repo.join(".env"));
         assert!(
             !marker.exists(),
             "the repository's fsmonitor program was executed"

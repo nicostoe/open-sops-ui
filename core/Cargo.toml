@@ -2,7 +2,7 @@
 name = "open-sops-ui-core"
 version = "1.1.0"
 edition = "2021"
-description = "Backend logic for open-sops-ui: keys, env files and calls to the sops CLI"
+description = "Backend logic for open-sops-ui: keys, SOPS files and calls to the sops CLI"
 license = "MIT"
 
 [dependencies]

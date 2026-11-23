@@ -29,7 +29,8 @@ const short = (k) => k.slice(0, 10) + "…" + k.slice(-6);
 document.querySelectorAll("[data-ic]").forEach((e) => (e.innerHTML = ic(e.dataset.ic)));
 
 let S = null;          // server state
-let cur = null;        // open file: { path, encrypted, items, orig, recipients, hasRule }
+// Open file: { path, format, kind: "env" | "text", items + orig or text + origText, recipients, rev }
+let cur = null;
 const shown = new Set(); // revealed row indexes
 
 async function api(action, body = {}) {
@@ -146,14 +147,30 @@ function setState(s) {
   renderUpdate();
 }
 function isDirty() {
-  return cur && JSON.stringify(cur.items) !== cur.orig;
+  if (!cur || cur.blocked) return false;
+  return cur.kind === "text" ? cur.text !== cur.origText : JSON.stringify(cur.items) !== cur.orig;
+}
+// The open file as the editor keeps it, from what the backend returned.
+// A textarea only knows \n; saving puts the file's own line endings back.
+function loaded(path, d) {
+  if (d.kind !== "text") return { path, ...d, orig: JSON.stringify(d.items) };
+  const text = d.text.replace(/\r\n/g, "\n");
+  return { path, ...d, text, origText: text };
+}
+// Scanning the folder can take a moment in a big project; the file list shows
+// a thin bar meanwhile (after a short delay, see .scanbar in style.css).
+let scans = 0;
+async function scanning(promise) {
+  scans++;
+  $("aside").classList.add("scanning");
+  try { return await promise; } finally { if (--scans === 0) $("aside").classList.remove("scanning"); }
 }
 function renderFiles() {
-  const icon = { ok: "lock", locked: "lock", plain: "unlock", "plain-risk": "unlock", "plain-tracked": "unlock", missing: "file", unreadable: "file" };
+  const icon = { ok: "lock", locked: "lock", missing: "file", unreadable: "file" };
   const gitMark = { modified: ["M", "Changed since the last commit"], new: ["N", "Not committed yet"] };
   const button = ({ f, i, base }) => {
     const mark = gitMark[f.git];
-    return `<button class="file s-${f.status} ${cur && cur.path === f.path ? "active" : ""}" data-i="${i}" title="${esc(f.name)}\n${esc(f.note)}">
+    return `<button class="file s-${f.status} ${cur && cur.path === f.path ? "active" : ""}" data-i="${i}" title="${esc(f.name)}\n${esc(f.note)}${f.format ? ` · ${FORMATS[f.format] || f.format}` : ""}">
       ${ic(icon[f.status])}<span class="mono">${esc(base)}</span>${mark ? `<span class="gs gs-${f.git}" title="${mark[1]}">${mark[0]}</span>` : ""}</button>`;
   };
   // Files are grouped under their folder, so long paths don't push the
@@ -184,14 +201,15 @@ function renderFiles() {
     (r.branch ? `<span class="branch mono" title="Current branch">${esc(r.branch)}</span>` : "") + `</div>` +
     section(all.filter((e) => e.f.repo === r.root).map((e) => ({ ...e, path: e.f.rel || e.f.name }))));
   $("#files").innerHTML = section(loose) + repos.join("") +
-    (S.files.length ? "" : `<div class="muted small" style="padding:6px 8px">No env files in this folder.</div>`) +
+    (S.files.length ? "" : `<div class="muted small" style="padding:6px 8px">No SOPS-encrypted files in this folder.</div>`) +
+    (S.scanLimited ? `<div class="small limitnote">This folder is too big to search completely. Open a subfolder, or lower the search depth in the settings.</div>` : "") +
     `<button class="file addfile" id="newFile">${ic("plus")}<span>New file</span></button>` +
     `<button class="file addfile" id="addFile">${ic("file")}<span>Open file</span></button>` +
     (S.sops.path ? `<div class="sopsinfo" title="${esc(S.sops.path)}">sops ${esc(S.sops.version)} · ${S.sops.source}</div>` : "");
   $("#files").querySelectorAll("[data-i]").forEach((b) => (b.onclick = () => openFile(S.files[b.dataset.i])));
   $("#newFile").onclick = newFileDialog;
   $("#addFile").onclick = async () => {
-    const p = await pick("file", "Open env file", S.folder);
+    const p = await pick("file", "Open SOPS file", S.folder);
     if (!p) return;
     try {
       setState(await api("addFile", { path: p }));
@@ -205,18 +223,19 @@ async function openFile(f) {
   shown.clear();
   if (f.status === "locked" || f.status === "missing" || f.status === "unreadable") { cur = { path: f.path, blocked: f }; renderFiles(); return renderEditor(); }
   try {
-    const d = await api("open", { path: f.path });
-    cur = { path: f.path, ...d, orig: JSON.stringify(d.items) };
+    cur = loaded(f.path, await api("open", { path: f.path }));
   } catch (e) { cur = null; fail(e); }
   renderFiles(); renderEditor();
 }
 function meta() { return S.files.find((f) => cur && f.path === cur.path); }
 
+const FORMATS = { dotenv: "Env", yaml: "YAML", json: "JSON", ini: "INI", binary: "Text" };
+
 function renderEditor() {
   const el = $("#editor");
   if (!cur) {
-    el.innerHTML = `<div class="empty">${ic("lock")}<h2>Open an env file</h2>
-      <p>Pick a file on the left to view and edit its values. Encrypted files are decrypted in memory only.</p>
+    el.innerHTML = `<div class="empty">${ic("lock")}<h2>Open a SOPS file</h2>
+      <p>Pick a file on the left to view and edit it. Files are decrypted in memory only.</p>
       <p><button class="btn" id="emptyNew">${ic("plus")}New encrypted file</button></p></div>`;
     $("#emptyNew").onclick = newFileDialog;
     return;
@@ -234,114 +253,139 @@ function renderEditor() {
     if ($("#goKeys")) $("#goKeys").onclick = keysDialog;
     return;
   }
-  const orig = new Map(JSON.parse(cur.orig).filter((i) => i.t === "kv").map((i) => [i.k, i.v]));
-  const rows = cur.items.map((it, i) => {
-    if (it.t !== "kv") return "";
-    const cls = !orig.has(it.k) ? "added" : orig.get(it.k) !== it.v ? "changed" : "";
-    const vis = shown.has(i);
-    return `<div class="row ${cls}" data-i="${i}"><span class="mark"></span>
-      <input class="k" type="text" value="${esc(it.k)}" placeholder="NAME" spellcheck="false" aria-label="Variable name">
-      <input class="val" type="${vis ? "text" : "password"}" value="${esc(it.v)}" placeholder="value" spellcheck="false" autocomplete="off" aria-label="Value of ${esc(it.k)}">
-      <span class="acts">
-        <button class="btn icon" data-a="eye" title="${vis ? "Hide" : "Reveal"}" aria-label="${vis ? "Hide" : "Reveal"} value">${ic(vis ? "eyeoff" : "eye")}</button>
-        <button class="btn icon" data-a="copy" title="Copy value" aria-label="Copy value">${ic("copy")}</button>
-        <button class="btn icon" data-a="del" title="Delete" aria-label="Delete variable">${ic("trash")}</button>
-      </span></div>`;
-  }).join("");
+  const text = cur.kind === "text";
+  // A text file in a binary wrapper is saved in place; YAML, JSON and INI are encrypted again.
+  const cantSave = text && !cur.isNew && cur.reencrypt && cur.format !== "binary";
   let note = "";
   if (cur.gone) {
-    note = `<div class="note warn">${ic("alert")}<span>This file is no longer on disk, for example after switching branches. Saving creates it again.</span></div>`;
+    note = `<div class="note warn">${ic("alert")}<span>This file is no longer on disk, for example after switching branches.${cur.isNew || text ? "" : " Saving creates it again."}</span></div>`;
   } else if (cur.stale) {
     note = `<div class="note warn">${ic("alert")}<span>This file changed on disk while you were editing. Your edits are kept; saving asks whether to overwrite the other version.</span></div>`;
-  } else if (!cur.encrypted && m && m.status === "plain-tracked") {
-    note = `<div class="note bad">${ic("alert")}<span>This file is plaintext and committed to Git. Encrypting it protects future commits, but the values stay readable in the history, so change those secrets.</span></div>`;
-  } else if (!cur.encrypted && m && m.status === "plain-risk") {
-    note = `<div class="note warn">${ic("alert")}<span>This file is plaintext and Git isn't ignoring it. Encrypt it before committing, or keep it out of Git.</span>` +
-      (m.repo ? `<button class="btn sm" id="ignoreBtn">Add to .gitignore</button>` : "") + `</div>`;
+  } else if (cantSave) {
+    note = `<div class="note warn">${ic("alert")}<span>${esc(cur.reencrypt)}</span></div>`;
   } else if (m && m.drift) {
     note = `<div class="note warn">${ic("alert")}<span>Recipients differ from the .sops.yaml rule.</span><button class="btn sm" id="fixDrift">Review</button></div>`;
   }
+  let body;
+  if (text) {
+    body = `<textarea class="textedit${cur.revealed ? "" : " masked"}" id="textEdit" spellcheck="false" autocomplete="off"
+      autocapitalize="off" aria-label="File content" placeholder="${cur.isNew ? "Content of the new file" : ""}"></textarea>`;
+  } else {
+    const orig = new Map(JSON.parse(cur.orig).filter((i) => i.t === "kv").map((i) => [i.k, i.v]));
+    const rows = cur.items.map((it, i) => {
+      if (it.t !== "kv") return "";
+      const cls = !orig.has(it.k) ? "added" : orig.get(it.k) !== it.v ? "changed" : "";
+      const vis = shown.has(i);
+      return `<div class="row ${cls}" data-i="${i}"><span class="mark"></span>
+        <input class="k" type="text" value="${esc(it.k)}" placeholder="NAME" spellcheck="false" aria-label="Variable name">
+        <input class="val" type="${vis ? "text" : "password"}" value="${esc(it.v)}" placeholder="value" spellcheck="false" autocomplete="off" aria-label="Value of ${esc(it.k)}">
+        <span class="acts">
+          <button class="btn icon" data-a="eye" title="${vis ? "Hide" : "Reveal"}" aria-label="${vis ? "Hide" : "Reveal"} value">${ic(vis ? "eyeoff" : "eye")}</button>
+          <button class="btn icon" data-a="copy" title="Copy value" aria-label="Copy value">${ic("copy")}</button>
+          <button class="btn icon" data-a="del" title="Delete" aria-label="Delete variable">${ic("trash")}</button>
+        </span></div>`;
+    }).join("");
+    body = `<div class="table">${rows}<button class="addrow" id="addVar">${ic("plus")}Add variable</button></div>`;
+  }
   // Comparing with the last commit needs a repository and git itself.
   const canCompare = m && m.repo && S.git && (m.git === "modified" || m.git === "new");
+  const count = (cur.recipients || []).length;
+  const fmt = FORMATS[cur.format];
   el.innerHTML = `${note}
     <div class="filehead"><span class="name mono">${esc(m ? m.name : cur.isNew ? cur.newName : cur.path)}</span>
-      <span class="muted small">${cur.isNew ? "New file, saved encrypted" : cur.encrypted ? `${cur.recipients.length} recipient${cur.recipients.length === 1 ? "" : "s"}` : "Not encrypted yet"}</span>
-      ${cur.encoding ? `<span class="pill" title="Encrypting saves the file as UTF-8, which is what sops writes.">${esc(cur.encoding)}</span>` : ""}
-      ${canCompare ? `<button class="btn sm" id="changesBtn" title="Compare with the last commit">${ic("branch")}Changes</button>` : ""}</div>
-    <div class="table">${rows}<button class="addrow" id="addVar">${ic("plus")}Add variable</button></div>
+      <span class="muted small">${cur.isNew ? "New file, saved encrypted" : `${count} recipient${count === 1 ? "" : "s"}`}</span>
+      ${fmt && cur.format !== "dotenv" ? `<span class="pill fmt" title="Edited as text">${fmt}</span>` : ""}
+      <span class="tools">
+        ${text ? `<button class="btn sm" id="revealText">${ic(cur.revealed ? "eyeoff" : "eye")}${cur.revealed ? "Hide" : "Show"}</button>
+          <button class="btn sm" id="copyText" title="Copy the whole content">${ic("copy")}Copy</button>` : ""}
+        ${canCompare ? `<button class="btn sm" id="changesBtn" title="Compare with the last commit">${ic("branch")}Changes</button>` : ""}
+      </span></div>
+    ${body}
     <div class="foot"><span class="muted small" id="dirty"></span><span class="spacer"></span>
       <button class="btn" id="revert" hidden>Discard</button>
-      <button class="btn primary" id="save">${ic("lock")}Encrypt and save</button></div>`;
+      <button class="btn primary" id="save" ${cantSave ? `disabled title="${esc(cur.reencrypt)}"` : ""}>${ic("lock")}Encrypt and save</button></div>`;
   if ($("#changesBtn")) $("#changesBtn").onclick = changesDialog;
-  if ($("#ignoreBtn")) $("#ignoreBtn").onclick = () => act("ignore", { path: cur.path }, null, "Added to .gitignore");
 
-  el.querySelectorAll(".row").forEach((row) => {
-    const i = +row.dataset.i, it = cur.items[i];
-    const tint = () => {
-      row.classList.toggle("added", !orig.has(it.k));
-      row.classList.toggle("changed", orig.has(it.k) && orig.get(it.k) !== it.v);
-      mark();
+  if (text) {
+    const area = $("#textEdit");
+    // Set as a value, not as markup: the parser would drop a leading line break.
+    area.value = cur.text;
+    area.oninput = () => { cur.text = area.value; mark(); };
+    $("#revealText").onclick = () => { cur.revealed = !cur.revealed; renderEditor(); };
+    $("#copyText").onclick = () => copy(cur.text, "Content", true);
+  } else {
+    const orig = new Map(JSON.parse(cur.orig).filter((i) => i.t === "kv").map((i) => [i.k, i.v]));
+    el.querySelectorAll(".row").forEach((row) => {
+      const i = +row.dataset.i, it = cur.items[i];
+      const tint = () => {
+        row.classList.toggle("added", !orig.has(it.k));
+        row.classList.toggle("changed", orig.has(it.k) && orig.get(it.k) !== it.v);
+        mark();
+      };
+      row.querySelector(".k").oninput = (e) => { it.k = e.target.value.trim(); tint(); };
+      row.querySelector(".val").oninput = (e) => { it.v = e.target.value; tint(); };
+      row.querySelector("[data-a=eye]").onclick = () => { shown.has(i) ? shown.delete(i) : shown.add(i); renderEditor(); };
+      row.querySelector("[data-a=copy]").onclick = () => copy(it.v, it.k || "Value", true);
+      row.querySelector("[data-a=del]").onclick = () => { cur.items.splice(i, 1); shown.clear(); renderEditor(); };
+    });
+    $("#addVar").onclick = () => {
+      cur.items.push({ t: "kv", k: "", v: "" });
+      shown.add(cur.items.length - 1);
+      renderEditor();
+      const ks = el.querySelectorAll(".k"); ks[ks.length - 1].focus();
     };
-    row.querySelector(".k").oninput = (e) => { it.k = e.target.value.trim(); tint(); };
-    row.querySelector(".val").oninput = (e) => { it.v = e.target.value; tint(); };
-    row.querySelector("[data-a=eye]").onclick = () => { shown.has(i) ? shown.delete(i) : shown.add(i); renderEditor(); };
-    row.querySelector("[data-a=copy]").onclick = () => copy(it.v, it.k || "Value", true);
-    row.querySelector("[data-a=del]").onclick = () => { cur.items.splice(i, 1); shown.clear(); renderEditor(); };
-  });
-  $("#addVar").onclick = () => {
-    cur.items.push({ t: "kv", k: "", v: "" });
-    shown.add(cur.items.length - 1);
-    renderEditor();
-    const ks = el.querySelectorAll(".k"); ks[ks.length - 1].focus();
-  };
+  }
   $("#save").onclick = save;
   $("#revert").onclick = async () => {
     // After an outside change, discarding means taking the version on disk.
     if (cur.stale && meta()) { const f = meta(); cur = null; return openFile(f); }
-    cur.items = JSON.parse(cur.orig); shown.clear(); renderEditor();
+    if (text) cur.text = cur.origText;
+    else cur.items = JSON.parse(cur.orig);
+    shown.clear(); renderEditor();
   };
   if ($("#fixDrift")) $("#fixDrift").onclick = recipientsDialog;
   mark();
 }
 function mark() {
   const d = isDirty();
-  $("#dirty").textContent = d ? "Unsaved changes" : cur.encrypted ? "Saved and encrypted" : "";
+  $("#dirty").textContent = d ? "Unsaved changes" : cur.isNew ? "" : "Saved and encrypted";
   $("#revert").hidden = !d;
 }
 
 async function save() {
-  if (cur.items.some((i) => i.t === "kv" && !i.k)) return toast("Enter a name for every variable.", true);
-  if (!cur.encrypted && !cur.hasRule) return chooseRecipients();
+  if (cur.kind !== "text" && cur.items.some((i) => i.t === "kv" && !i.k)) return toast("Enter a name for every variable.", true);
+  if (cur.isNew && !cur.hasRule) return chooseRecipients();
   await doSave();
 }
 let saving = false;
 async function doSave(recipients, overwrite = false) {
   saving = true;
   try {
+    const content = cur.kind === "text" ? { text: cur.text } : { items: cur.items };
     if (cur.isNew) {
       // Created encrypted in one step; the plaintext never reaches the disk.
-      const d = await api("create", { dir: cur.newDir, name: cur.newName, items: cur.items, recipients });
-      cur = { path: d.path, ...d.file, orig: JSON.stringify(d.file.items) };
+      const d = await api("create", { dir: cur.newDir, name: cur.newName, ...content, recipients });
+      cur = { ...loaded(d.path, d.file), revealed: cur.revealed };
       setState(d.state); renderEditor();
       toast("Created and encrypted");
       return;
     }
-    const d = await api("save", { path: cur.path, items: cur.items, recipients, rev: cur.rev, overwrite });
+    const d = await api("save", { path: cur.path, ...content, rev: cur.rev, overwrite });
     if (d.conflict) return conflictDialog(recipients);
-    cur = { path: cur.path, ...d.file, orig: JSON.stringify(d.file.items) };
+    cur = { ...loaded(cur.path, d.file), revealed: cur.revealed };
     setState(d.state); renderEditor();
     toast("Encrypted and saved");
   } catch (e) { fail(e); }
   finally { saving = false; }
 }
 
-// A new encrypted env file: pick a folder and a name, then fill in the
-// variables in the editor. Saving creates the file, already encrypted.
+// A new encrypted file: pick a folder and a name, then fill in the content in
+// the editor. The name sets the format. Saving creates the file, already encrypted.
 async function newFileDialog() {
   if (isDirty() && !(await ask("Discard unsaved changes?", "Discard"))) return;
   const sep = S.folder.includes("\\") ? "\\" : "/";
   const dirOf = (p) => p.slice(0, Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\")));
-  // Likely homes: the open folder, each repository, and folders that already hold env files.
+  // Likely homes: the open folder, each repository, and folders that already hold encrypted files.
   const dirs = [...new Set([S.folder, ...(S.repos || []).map((r) => r.root), ...S.files.map((f) => dirOf(f.path))])];
   const label = (d) => (d === S.folder ? `${d.split(/[\\/]/).pop() || d} (open folder)` : d.startsWith(S.folder + sep) ? d.slice(S.folder.length + 1) : d);
   const dlg = $("#dlg");
@@ -352,7 +396,8 @@ async function newFileDialog() {
     <div class="formrow" style="align-items:center"><label for="nfName" style="width:70px">Name</label>
       <input type="text" id="nfName" class="mono" placeholder=".env.production" spellcheck="false"></div>
     <div class="err" id="nfErr"></div>
-    <p class="muted small">The file is created encrypted when you save it; its content never touches the disk in plaintext.</p>
+    <p class="muted small">The name sets the format: env files get a table of variables; .yaml, .json, .ini and any other name a text editor.
+      The file is created encrypted when you save it; its content never touches the disk in plaintext.</p>
     <div class="formrow" style="justify-content:flex-end"><button class="btn primary" id="nfGo">Continue</button></div>`);
   const sel = $("#nfDir", dlg), name = $("#nfName", dlg), err = $("#nfErr", dlg);
   sel.onchange = async () => {
@@ -369,11 +414,13 @@ async function newFileDialog() {
     try {
       const d = await api("checkNewFile", { dir: sel.value, name: name.value });
       dlg.close();
-      cur = { path: d.path, isNew: true, newDir: sel.value, newName: name.value.trim(), encrypted: false, hasRule: d.hasRule,
-        items: [{ t: "kv", k: "", v: "" }], orig: "[]", recipients: [] };
+      const base = { path: d.path, isNew: true, newDir: sel.value, newName: name.value.trim(), hasRule: d.hasRule,
+        format: d.format, kind: d.kind, recipients: [] };
+      cur = d.kind === "text" ? { ...base, text: "", origText: "", revealed: true }
+        : { ...base, items: [{ t: "kv", k: "", v: "" }], orig: "[]" };
       shown.clear(); shown.add(0);
       renderFiles(); renderEditor();
-      $("#editor .k").focus();
+      (d.kind === "text" ? $("#textEdit") : $("#editor .k")).focus();
     } catch (e) { err.textContent = e.message; }
   };
 }
@@ -497,6 +544,7 @@ function updateDialog() {
   };
 }
 
+const sameList = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
 function settingsDialog() {
   const dlg = $("#dlg"), now = S.settings.clipboardClearSeconds;
   const choices = [15, 30, 60, 120, 300, 0];
@@ -511,6 +559,15 @@ function settingsDialog() {
     <div class="formrow" style="align-items:center"><label for="clipSel" style="flex:1">Clear copied values after</label>
       <select id="clipSel">${choices.map((s) => `<option value="${s}" ${s === now ? "selected" : ""}>${s ? duration(s) : "Never"}</option>`).join("")}</select></div>
     <p class="muted small">Applies to variable values, not to public keys. Clipboard history tools may keep their own copy.</p>
+    <h3>Files</h3>
+    <div class="formrow" style="align-items:center"><label for="depthSel" style="flex:1">Search subfolders up to</label>
+      <select id="depthSel">${Array.from({ length: 10 }, (_, i) => i + 1).map((n) =>
+        `<option value="${n}" ${n === S.settings.scanDepth ? "selected" : ""}>${n} level${n === 1 ? "" : "s"} deep</option>`).join("")}</select></div>
+    <label for="skipIn" class="small" style="display:block;margin-top:10px">Skipped folders</label>
+    <div class="formrow" style="margin-top:4px"><input type="text" id="skipIn" class="mono" spellcheck="false"
+      value="${esc(S.settings.skipDirs.join(", "))}" placeholder="node_modules, vendor">
+      <button class="btn sm" id="skipReset" style="height:32px" ${sameList(S.settings.skipDirs, S.settings.defaultSkipDirs) ? "disabled" : ""}>Reset</button></div>
+    <p class="muted small">Folder names, separated by commas. Hidden folders such as .git are always skipped.</p>
     <h3>Updates</h3>
     <label class="check setting"><input type="checkbox" id="updChk" ${S.settings.checkUpdates ? "checked" : ""}>
       <span>Look for a new version on start and once a day</span></label>
@@ -535,6 +592,18 @@ function settingsDialog() {
   $("#aboutVersion", dlg).onclick = () => openPage("open_release_page", { tag: `v${S.version}` });
   $("#aboutRepo", dlg).onclick = () => openPage("open_project_page", { page: "repo" });
   $("#aboutIssues", dlg).onclick = () => openPage("open_project_page", { page: "issues" });
+  const saveFiles = async (change) => {
+    try {
+      setState(await scanning(api("setSettings", change)));
+      $("#skipIn", dlg).value = S.settings.skipDirs.join(", ");
+      $("#skipReset", dlg).disabled = sameList(S.settings.skipDirs, S.settings.defaultSkipDirs);
+      toast("Setting saved");
+    } catch (err) { fail(err); }
+  };
+  $("#depthSel", dlg).onchange = (e) => saveFiles({ scanDepth: +e.target.value });
+  $("#skipIn", dlg).onchange = (e) => saveFiles({ skipDirs: e.target.value.split(",").map((d) => d.trim()).filter(Boolean) });
+  $("#skipIn", dlg).onkeydown = (e) => { if (e.key === "Enter") e.target.blur(); };
+  $("#skipReset", dlg).onclick = () => saveFiles({ skipDirs: S.settings.defaultSkipDirs });
   $("#clipSel", dlg).onchange = async (e) => {
     try { setState(await api("setSettings", { clipboardClearSeconds: +e.target.value })); toast("Setting saved"); } catch (err) { fail(err); }
   };
@@ -555,25 +624,36 @@ document.querySelectorAll("dialog").forEach((d) => {
   d.addEventListener("cancel", (e) => { if (d.onleave) { e.preventDefault(); d.onleave(); } });
 });
 
-// What changed in the open file since the last commit, by variable. Values
-// stay hidden until asked for.
+// What changed in the open file since the last commit: by variable for env
+// files, by line for everything else. Values stay hidden until asked for.
 async function changesDialog() {
   if (isDirty()) return toast("Save or discard your changes first.", true);
   let d;
   try { d = await api("changes", { path: cur.path }); } catch (e) { return fail(e); }
   const dlg = $("#dlg"), m = meta();
   const label = { added: "Added", changed: "Changed", removed: "Removed" };
+  const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
   let reveal = false;
   const render = () => {
-    const val = (v) => `<span class="mono">${reveal ? esc(v) : "••••••••"}</span>`;
-    const rows = d.changes.map((c) => `<div class="chg"><span class="pill chg-${c.kind}">${label[c.kind]}</span>
-      <span class="mono ck">${esc(c.k)}</span>
-      <span class="cv">${c.kind === "changed" ? `${val(c.old)} → ${val(c.new)}` : val(c.kind === "added" ? c.new : c.old)}</span></div>`).join("");
+    const hidden = "••••••••";
+    let rows, after = "";
+    if (d.kind === "text") {
+      rows = d.lines.map((l) => l.kind === "skip"
+        ? `<div class="dl skip">${plural(l.count, "unchanged line")}</div>`
+        : `<div class="dl ${l.kind}">${reveal ? esc(l.text) : l.text.trim() ? hidden : ""}</div>`).join("");
+      if (rows) { rows = `<div class="diff">${rows}</div>`; after = `<p class="muted small">${plural(d.changed, "line")} added or removed</p>`; }
+    } else {
+      const val = (v) => `<span class="mono">${reveal ? esc(v) : hidden}</span>`;
+      rows = d.changes.map((c) => `<div class="chg"><span class="pill chg-${c.kind}">${label[c.kind]}</span>
+        <span class="mono ck">${esc(c.k)}</span>
+        <span class="cv">${c.kind === "changed" ? `${val(c.old)} → ${val(c.new)}` : val(c.kind === "added" ? c.new : c.old)}</span></div>`).join("");
+      if (rows && d.unchanged) after = `<p class="muted small">${plural(d.unchanged, "unchanged variable")}</p>`;
+    }
     const name = `<span class="mono">${esc(m ? m.rel || m.name : "")}</span>`;
     show(dlg, "Changes since the last commit", `
       <p class="muted small">${d.committed ? `Compared with the committed version of ${name}.` : `${name} has never been committed, so everything in it is new.`}</p>
-      ${rows || `<p>The values are the same as in the last commit. Only the encryption changed, for example the recipients.</p>`}
-      ${rows && d.unchanged ? `<p class="muted small">${d.unchanged} unchanged variable${d.unchanged === 1 ? "" : "s"}</p>` : ""}
+      ${rows || `<p>The content is the same as in the last commit. Only the encryption changed, for example the recipients.</p>`}
+      ${after}
       ${rows ? `<div class="formrow" style="justify-content:flex-end"><button class="btn" id="chgReveal">${ic(reveal ? "eyeoff" : "eye")}${reveal ? "Hide values" : "Show values"}</button></div>` : ""}`);
     if ($("#chgReveal", dlg)) $("#chgReveal", dlg).onclick = () => { reveal = !reveal; render(); };
   };
@@ -677,7 +757,7 @@ async function refresh(manual = false) {
   btn.classList.add("spin");
   refreshing = (async () => {
     try {
-      setState(await api("state"));
+      setState(await scanning(api("state")));
       const m = meta();
       if (cur && !cur.blocked && m && m.rev && m.rev !== cur.rev) {
         if (isDirty()) {
@@ -718,7 +798,7 @@ async function act(action, body, again, msg) {
 function recipientsDialog() {
   const dlg = $("#dlg"), m = meta();
   let fileHtml = "";
-  if (cur && cur.encrypted) {
+  if (cur && !cur.blocked && !cur.isNew && cur.recipients) {
     const have = cur.recipients.map((r) => r.key);
     const addable = candidates().filter((c) => !have.includes(c.key));
     const nameOf = (k) => (candidates().find((c) => c.key === k) || {}).name || short(k);
@@ -746,7 +826,7 @@ function recipientsDialog() {
     if (isDirty()) return toast("Save or discard your changes first.", true);
     try {
       const d = await api("setRecipients", { path: cur.path, recipients: list });
-      cur = { path: cur.path, ...d.file, orig: JSON.stringify(d.file.items) };
+      cur = { ...loaded(cur.path, d.file), revealed: cur.revealed };
       setState(d.state); renderEditor(); recipientsDialog(); toast(msg);
     } catch (e) { fail(e); }
   };
@@ -860,7 +940,7 @@ $("#settingsBtn").onclick = settingsDialog;
 $("#keysBtn").onclick = keysDialog;
 $("#recBtn").onclick = recipientsDialog;
 async function openFolder(path) {
-  try { cur = null; setState(await api("setFolder", { path })); renderEditor(); } catch (e) { fail(e); }
+  try { cur = null; renderEditor(); setState(await scanning(api("setFolder", { path }))); } catch (e) { fail(e); }
 }
 async function chooseFolder() {
   const p = await pick("folder", "Choose a project folder", S.folder);
@@ -893,7 +973,7 @@ $("#refreshBtn").onclick = () => refresh(true);
 window.addEventListener("focus", refreshOnFocus);
 try { T.window.getCurrentWindow().onFocusChanged(({ payload }) => { if (payload) refreshOnFocus(); }); } catch { /* the window event above covers it */ }
 
-api("state").then((s) => {
+scanning(api("state")).then((s) => {
   setState(s); renderEditor();
   checkForUpdate();
   setInterval(() => checkForUpdate(), DAY);

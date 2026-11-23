@@ -52,20 +52,33 @@
   try {
     setTheme("light");
     await until("the file list", () => q("#files .file[data-i]"));
-    check(text("#files").includes(".env.production") && text("#files").includes(".env.staging"), "both env files are listed");
-    const dir = q("#files .dir");
-    check(dir && /services[\\/]worker[\\/]$/.test(dir.innerText.trim()), "a file in a subfolder is grouped under its folder");
+    for (const name of [".env.production", ".env.staging", "valkey-users.enc.acl", "app.yaml", "feature-flags.json", "billing.ini"]) {
+      check(fileBtn(name), `${name} is listed`);
+    }
+    check(!fileBtn(".env.example"), "a plaintext file isn't listed");
+    check(!q("aside").classList.contains("scanning"), "the scan bar is gone once the files are listed");
+    const dirs = [...document.querySelectorAll("#files .dir")].map((d) => d.innerText.trim());
+    check(dirs.some((d) => /^services[\\/]worker[\\/]$/.test(d)), "a file in a subfolder is grouped under its folder");
     const sub = q("#files .dir.sub");
     check(sub && /^config[\\/]$/.test(sub.innerText.trim()), "a nested folder shows only its own part, under its parent");
     check([...document.querySelectorAll("#files .file[data-i] .mono")].every((e) => !/[\\/]/.test(e.innerText)), "file entries show the name without the path");
     const repo = q("#files .repo");
     check(repo && repo.innerText.includes("shop-api") && repo.innerText.includes("main"), "the repository is shown with its branch");
-    check(fileBtn(".env.example").classList.contains("s-plain") && !fileBtn(".env.example").querySelector(".gs"), "a committed example file raises no warning");
-    check(fileBtn(".env.staging").classList.contains("s-plain"), "an ignored plaintext file raises no warning");
-    check(fileBtn(".env.production").classList.contains("s-plain-risk"), "plaintext that Git doesn't ignore is flagged");
+    check(fileBtn(".env.production").classList.contains("s-locked"), "without a key, the files are locked");
+    check(fileBtn(".env.production").querySelector(".gs")?.innerText === "N", "a file that isn't committed yet is marked");
+    check(!fileBtn("app.yaml").querySelector(".gs"), "a committed file has no mark");
     check(text(".sopsinfo").startsWith("sops "), "the app found sops");
     check(q("#keysDot").className === "dot", "a missing key is flagged");
     await shot("01-start-without-key");
+
+    // The scan bar: shown while a refresh runs (after a short delay, so a quick one doesn't flicker).
+    const running = refresh(true);
+    check(q("aside").classList.contains("scanning"), "a refresh shows the scan bar");
+    await running;
+    check(!q("aside").classList.contains("scanning"), "the scan bar goes away when the scan is done");
+    q("aside").classList.add("scanning"); // held on for the picture, as on a slow scan
+    await shot("01a-scanning");
+    q("aside").classList.remove("scanning");
 
     // The file list's width follows its drag handle, stays within limits and is remembered.
     const resizer = q("#resizer"), sideW = () => Math.round(q("aside").getBoundingClientRect().width);
@@ -102,21 +115,36 @@
     await shot("03-keys");
     await click("#dlg [data-close]");
 
+    // The project's files are encrypted for a teammate's key: opening one says so.
     fileBtn(".env.production").click();
+    await until("the missing key", () => q("#editor #goKeys"));
+    check(text("#editor").includes("No matching key"), "a file without a matching key explains why it doesn't open");
+    await shot("04-no-matching-key");
+    const fx = await call("fixture");
+    await click("#goKeys");
+    await click("#dlg [data-f=paste]");
+    await type("#dlg #kc", fx.teamKey);
+    await type("#dlg #kl", "team");
+    await click("#dlg #ks");
     await until("the variables", () => q("#editor .row"));
-    check(text(".note").includes("Git isn't ignoring it") && q("#ignoreBtn"), "the plaintext warning offers to ignore the file");
-    check(document.querySelectorAll("#editor .row").length === 4, "all four variables are shown");
-    check(text(".filehead").includes("Not encrypted yet"), "the file is shown as plaintext");
-    await shot("04-plaintext-file");
+    check(document.querySelectorAll("#editor .row").length === 4, "with the teammate's key, all four variables are shown");
+    check(fileBtn(".env.production").classList.contains("s-ok"), "the file is marked as readable");
+    check(text(".filehead").includes("1 recipient"), "the file has one recipient");
+    await until("the keys dialog", () => q("#dlg[open] [data-persist]"));
+    await click("#dlg [data-close]");
+    await shot("05-env-file");
 
-    await click("#save");
-    await until("the recipient chooser", () => q("#dlg #go"));
-    await shot("05-encrypt-for");
-    await click("#dlg #go");
-    await shows(".filehead", "1 recipient");
-    check(fileBtn(".env.production").classList.contains("s-ok"), "the file is marked as encrypted and readable");
-    check(fileBtn(".env.production").querySelector(".gs")?.innerText === "N", "the file is marked as not committed yet");
-    await shot("06-encrypted");
+    // Add my own key as a recipient, so the file opens without the teammate's key.
+    await click("#recBtn");
+    await until("the recipient choice", () => q("#dlg[open] #addSel"));
+    const mine = [...q("#addSel").options].find((o) => o.textContent.startsWith("You (default)"));
+    check(mine, "my own key can be added as a recipient");
+    q("#addSel").value = mine.value;
+    await click("#dlg #addRec");
+    await shows(".filehead", "2 recipients");
+    await until("the updated chips", () => document.querySelectorAll("#dlg[open] .chip").length === 2);
+    await shot("06-recipient-added");
+    await click("#dlg [data-close]");
 
     await click("#changesBtn");
     await until("the changes", () => q("#dlg[open] .chg")); // [open]: a closed dialog keeps its old content
@@ -235,12 +263,14 @@
     // getting the window's focus back both show them.
     const dirOf = (p) => p.slice(0, Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\")) + 1);
     const project = dirOf(cur.path);
-    await call("writeFile", { path: project + ".env.preview", text: "PREVIEW_URL=https://preview.example\n" });
+    await call("writeFile", { path: project + ".env.preview", text: fx.preview });
+    await call("writeFile", { path: project + ".env.local", text: "LOCAL=plaintext\n" });
     check(!fileBtn(".env.preview"), "a file added outside the app isn't listed yet");
     await click("#refreshBtn");
     await until("the new file", () => fileBtn(".env.preview"));
     check(true, "the refresh button lists a file added outside the app");
-    await call("writeFile", { path: project + ".env.qa", text: "QA=1\n" });
+    check(!fileBtn(".env.local"), "a plaintext file added outside the app isn't listed");
+    await call("writeFile", { path: project + ".env.qa", text: fx.qa });
     await sleep(2100); // focus refreshes are at most every two seconds
     window.dispatchEvent(new Event("focus"));
     await until("the file found on focus", () => fileBtn(".env.qa"));
@@ -297,10 +327,10 @@
     // A new encrypted file, created from the sidebar.
     await click("#newFile");
     await until("the new-file dialog", () => q("#dlg[open] #nfName"));
-    await type("#nfName", "notes.txt");
+    await type("#nfName", "../x.env");
     await click("#nfGo");
-    await shows("#nfErr", "with env in it");
-    check(q("#dlg").open, "a name the app wouldn't list is refused with a hint");
+    await shows("#nfErr", "without folders");
+    check(q("#dlg").open, "a name with a folder in it is refused with a hint");
     await type("#nfName", ".env.ci");
     await shot("14-new-file");
     await click("#nfGo");
@@ -310,9 +340,67 @@
     await type("#editor .row .val", "abc123");
     await click("#save");
     await until("the recipient chooser", () => q("#dlg[open] #go"));
+    await shot("14a-encrypt-for");
     await click("#dlg #go");
-    await shows(".filehead", "1 recipient");
+    await shows(".filehead", "recipients");
     check(fileBtn(".env.ci")?.classList.contains("s-ok"), "the new file is listed, encrypted and readable");
+    q("#toast").className = "";
+
+    // Other formats open as text: the whole content in one field, masked until shown.
+    fileBtn("valkey-users.enc.acl").click();
+    await until("the text editor", () => cur && cur.path.endsWith(".acl") && q("#editor #textEdit"));
+    check(q("#textEdit").classList.contains("masked"), "the content is masked at first");
+    check(q("#textEdit").value.includes("user app on"), "the decrypted ACL is in the editor");
+    check(text(".filehead .fmt") === "TEXT" || text(".filehead .fmt") === "Text", "the format is shown");
+    check(!q("#editor .row") && !q("#addVar"), "a text file has no variable table");
+    await shot("14b-text-file-masked");
+    await click("#revealText");
+    check(!q("#textEdit").classList.contains("masked"), "Show reveals the content");
+    const area = q("#textEdit");
+    area.focus();
+    area.value += "user worker on >worker-pw-91c2 ~queue:* +@list\n";
+    area.dispatchEvent(new Event("input", { bubbles: true }));
+    await shows("#dirty", "Unsaved");
+    await shot("14c-text-file");
+    await click("#save");
+    await shows("#dirty", "Saved");
+    check(q("#textEdit").value.endsWith("+@list\n") && !q("#textEdit").classList.contains("masked"), "saving keeps the content and the view");
+    await until("the modified mark", () => fileBtn("valkey-users.enc.acl").querySelector(".gs")?.innerText === "M");
+    await click("#changesBtn");
+    await until("the line changes", () => q("#dlg[open] .diff"));
+    const diff = [...document.querySelectorAll("#dlg .dl")].map((l) => l.className.replace("dl ", ""));
+    check(diff.filter((k) => k === "added").length === 1 && !diff.includes("removed"), "the comparison shows the one added line");
+    check(!text("#dlg .diff").includes("worker-pw"), "the lines are hidden at first");
+    await click("#chgReveal");
+    await shows("#dlg .diff", "worker-pw-91c2");
+    await shot("14d-text-changes");
+    await click("#dlg [data-close]");
+    // Discarding text edits brings back the saved content.
+    q("#textEdit").value = "scratch";
+    q("#textEdit").dispatchEvent(new Event("input", { bubbles: true }));
+    await click("#revert");
+    check(q("#textEdit").value.endsWith("+@list\n") && !text("#dirty").includes("Unsaved"), "Discard restores the saved text");
+
+    for (const [name, part, label, picture] of [
+      ["app.yaml", "session_secret", "YAML", "14e-yaml-file"],
+      ["feature-flags.json", "ff_live_51c0", "JSON", "14f-json-file"],
+      ["billing.ini", "sk_live_6a2e", "INI", "14g-ini-file"],
+    ]) {
+      fileBtn(name).click();
+      await until(`the ${label} file`, () => cur && cur.path.endsWith(name) && q("#editor #textEdit"));
+      check(q("#textEdit").value.includes(part) && text(".filehead .fmt").toUpperCase() === label, `${name} opens as ${label} text`);
+      await click("#revealText");
+      await shot(picture);
+    }
+    // Saving YAML encrypts it again, for the same recipient.
+    fileBtn("app.yaml").click();
+    await until("the YAML file", () => cur && cur.path.endsWith("app.yaml") && q("#editor #textEdit"));
+    q("#textEdit").value = q("#textEdit").value.replace("smtp.example", "smtp2.example");
+    q("#textEdit").dispatchEvent(new Event("input", { bubbles: true }));
+    await click("#save");
+    await shows("#dirty", "Saved");
+    check(cur.text.includes("smtp2.example") && cur.recipients.length === 1, "a YAML file saves, for the same recipient");
+
     fileBtn(".env.production").click();
     await until("the production file again", () => cur && cur.path.endsWith(".env.production") && q("#editor .row"));
     q("#toast").className = "";
@@ -324,6 +412,27 @@
     sel.dispatchEvent(new Event("change", { bubbles: true }));
     await until("the saved setting", () => S.settings.clipboardClearSeconds === 60);
     check(true, "the clipboard time can be changed in the settings");
+    q("#toast").className = "";
+    // How deep the file list searches, and which folders it skips.
+    const depth = q("#depthSel");
+    check(depth.value === "3", "the search depth starts at three levels");
+    depth.value = "1";
+    depth.dispatchEvent(new Event("change", { bubbles: true }));
+    await until("the shallow file list", () => S.settings.scanDepth === 1 && !fileBtn(".env.testing"));
+    check(fileBtn("valkey-users.enc.acl") && !fileBtn(".env.testing"), "a lower depth leaves out deeper files");
+    depth.value = "3";
+    depth.dispatchEvent(new Event("change", { bubbles: true }));
+    await until("the deep files again", () => fileBtn(".env.testing"));
+    const skip = q("#skipIn");
+    check(skip.value.includes("node_modules") && q("#skipReset").disabled, "the skipped folders start with the defaults");
+    skip.value = skip.value + ", config";
+    skip.dispatchEvent(new Event("change", { bubbles: true }));
+    await until("the config folder skipped", () => !fileBtn("app.yaml"));
+    check(!fileBtn(".env.testing") && fileBtn(".env.production"), "a skipped folder name is left out at every level");
+    check(!q("#skipReset").disabled, "a changed list can be reset");
+    await click("#skipReset");
+    await until("the config folder back", () => fileBtn("app.yaml"));
+    check(q("#skipReset").disabled && !q("#skipIn").value.includes("config"), "Reset restores the default list");
     q("#toast").className = "";
     check(!q("#themeBtn"), "the theme switch lives in the settings, not the header");
     // Updates: the settings show this build's version and the switch.
@@ -428,6 +537,10 @@
     await until("the changes", () => q("#dlg[open] .chg"));
     await shot("19-dark-changes");
     await click("#dlg [data-close]");
+    fileBtn("app.yaml").click();
+    await until("the YAML file", () => cur && cur.path.endsWith("app.yaml") && q("#editor #textEdit"));
+    await click("#revealText");
+    await shot("19a-dark-text-file");
 
     await call("done", { ok: true, log });
   } catch (e) {

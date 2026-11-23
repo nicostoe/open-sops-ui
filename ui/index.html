@@ -18,10 +18,11 @@
 </header>
 <div id="banner"></div>
 <main>
-  <aside>
+  <aside class="scanning">
+    <div class="scanbar" aria-hidden="true"></div>
     <div class="sidehead"><span class="muted small">Files</span>
       <button class="btn icon" id="refreshBtn" title="Refresh: look for new and changed files" aria-label="Refresh"></button></div>
-    <div id="files"></div>
+    <div id="files"><div class="muted small scanhint">Looking for SOPS files…</div></div>
   </aside>
   <div id="resizer" role="separator" aria-orientation="vertical" aria-label="File list width" tabindex="0"
     title="Drag to resize, double-click to reset"></div>

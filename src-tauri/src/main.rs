@@ -110,11 +110,20 @@ fn copy(
 /// off the main thread, so the window stays responsive while sops runs.
 #[tauri::command(async)]
 fn api(state: tauri::State<'_, Shared>, action: String, body: Value) -> Result<Value, String> {
-    let mut app = state
-        .0
-        .lock()
-        .map_err(|_| "The app hit an internal error. Restart it.".to_string())?;
-    app.handle(&action, &body)
+    let lock = || {
+        state
+            .0
+            .lock()
+            .map_err(|_| "The app hit an internal error. Restart it.".to_string())
+    };
+    if action == "state" {
+        // The folder scan can take a while in a big project. It runs without
+        // the lock, so opening and saving files don't wait for it.
+        let job = lock()?.scan_job();
+        let scan = job.run();
+        return Ok(lock()?.finish_scan(scan));
+    }
+    lock()?.handle(&action, &body)
 }
 
 /// Folders searched for a shipped sops binary, most specific first.
