@@ -4,6 +4,7 @@
   --primary: #1c1b19; --on-primary: #ffffff;
   --ok: #2c7a3f; --ok-bg: #e3f1e2; --warn: #9a6200; --warn-bg: #fbeed2; --bad: #b3312b; --bad-bg: #fbe5e3;
   --accent: #2563a8;
+  --hl-key: #2563a8; --hl-str: #2c7a3f; --hl-num: #9a5b00; --hl-bool: #8a3ab9; --hl-selection: rgba(37, 99, 168, .22);
   --mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, "Liberation Mono", monospace;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   color-scheme: light;
@@ -14,6 +15,7 @@
   --primary: #ecebe6; --on-primary: #171715;
   --ok: #7cc98b; --ok-bg: #1d3323; --warn: #e3b25a; --warn-bg: #3a2e14; --bad: #f08a83; --bad-bg: #3d1f1d;
   --accent: #7fb2ee;
+  --hl-key: #7fb2ee; --hl-str: #8fcf9a; --hl-num: #e3b25a; --hl-bool: #d4a1f2; --hl-selection: rgba(127, 178, 238, .3);
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
@@ -154,11 +156,24 @@ section#editor { padding: 20px 24px; overflow: auto; }
   color: var(--text2); cursor: pointer; text-align: left; }
 .addrow:hover { background: var(--hover); color: var(--text); }
 /* The whole content of a YAML, JSON, INI or text file. Masked like the
-   values in the variable table until revealed. */
-.textedit { display: block; width: 100%; min-height: calc(100vh - 260px); resize: vertical; font-family: var(--mono);
-  font-size: 13px; line-height: 1.5; padding: 10px 12px; border-radius: 9px; background: var(--panel); tab-size: 2;
-  white-space: pre; overflow: auto; }
-.textedit.masked { -webkit-text-security: disc; }
+   values in the variable table until revealed. When the format is known, a
+   coloured copy (.hl) sits behind the textarea, whose own text is then
+   transparent; both share every metric so the characters line up. */
+.codewrap { position: relative; border-radius: 9px; background: var(--panel); }
+.textedit, .codewrap .hl { font-family: var(--mono); font-size: 13px; line-height: 1.5; padding: 10px 12px; tab-size: 2;
+  white-space: pre; border: 1px solid var(--line2); border-radius: 9px; letter-spacing: normal; }
+.textedit { position: relative; display: block; width: 100%; min-height: calc(100vh - 260px); resize: vertical;
+  background: transparent; overflow: auto; }
+.codewrap .hl { position: absolute; inset: 0; margin: 0; overflow: hidden; border-color: transparent; color: var(--text);
+  pointer-events: none; visibility: hidden; }
+.codewrap.coloured .hl { visibility: visible; }
+.codewrap.coloured .textedit { color: transparent; caret-color: var(--text); }
+.codewrap.coloured .textedit::selection { color: transparent; background: var(--hl-selection); }
+.textedit::placeholder { color: var(--muted); }
+.codewrap.masked .textedit { -webkit-text-security: disc; }
+.t-key { color: var(--hl-key); } .t-str { color: var(--hl-str); } .t-num { color: var(--hl-num); }
+.t-bool { color: var(--hl-bool); } .t-punct { color: var(--text2); }
+.t-comment { color: var(--muted); font-style: italic; } .t-section { color: var(--hl-key); font-weight: 600; }
 .filehead .fmt { text-transform: uppercase; letter-spacing: .03em; font-size: 11px; }
 .filehead .tools { margin-left: auto; display: flex; gap: 6px; align-self: center; }
 .filehead .tools #changesBtn { margin-left: 0; }

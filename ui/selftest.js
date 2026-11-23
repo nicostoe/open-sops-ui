@@ -349,13 +349,15 @@
     // Other formats open as text: the whole content in one field, masked until shown.
     fileBtn("valkey-users.enc.acl").click();
     await until("the text editor", () => cur && cur.path.endsWith(".acl") && q("#editor #textEdit"));
-    check(q("#textEdit").classList.contains("masked"), "the content is masked at first");
+    check(q("#codeWrap").classList.contains("masked"), "the content is masked at first");
     check(q("#textEdit").value.includes("user app on"), "the decrypted ACL is in the editor");
     check(text(".filehead .fmt") === "TEXT" || text(".filehead .fmt") === "Text", "the format is shown");
     check(!q("#editor .row") && !q("#addVar"), "a text file has no variable table");
+    check(!q("#codeWrap").classList.contains("coloured"), "masked text isn't coloured");
     await shot("14b-text-file-masked");
     await click("#revealText");
-    check(!q("#textEdit").classList.contains("masked"), "Show reveals the content");
+    check(!q("#codeWrap").classList.contains("masked"), "Show reveals the content");
+    check(!q("#codeWrap").classList.contains("coloured"), "a text file without a known syntax stays plain");
     const area = q("#textEdit");
     area.focus();
     area.value += "user worker on >worker-pw-91c2 ~queue:* +@list\n";
@@ -364,7 +366,7 @@
     await shot("14c-text-file");
     await click("#save");
     await shows("#dirty", "Saved");
-    check(q("#textEdit").value.endsWith("+@list\n") && !q("#textEdit").classList.contains("masked"), "saving keeps the content and the view");
+    check(q("#textEdit").value.endsWith("+@list\n") && !q("#codeWrap").classList.contains("masked"), "saving keeps the content and the view");
     await until("the modified mark", () => fileBtn("valkey-users.enc.acl").querySelector(".gs")?.innerText === "M");
     await click("#changesBtn");
     await until("the line changes", () => q("#dlg[open] .diff"));
@@ -390,13 +392,23 @@
       await until(`the ${label} file`, () => cur && cur.path.endsWith(name) && q("#editor #textEdit"));
       check(q("#textEdit").value.includes(part) && text(".filehead .fmt").toUpperCase() === label, `${name} opens as ${label} text`);
       await click("#revealText");
+      // Coloured syntax: the layer behind the textarea holds exactly its text.
+      check(q("#codeWrap").classList.contains("coloured") && q("#codeWrap .hl .t-key") && q("#codeWrap .hl .t-str"), `${label} is coloured`);
+      check(q("#codeWrap .hl code").textContent === q("#textEdit").value + "\n", `the coloured ${label} lines up with the text`);
+      const box = (sel) => q(sel).getBoundingClientRect();
+      check(box("#codeWrap .hl").top === box("#textEdit").top && box("#codeWrap .hl").left === box("#textEdit").left, `the ${label} colour layer covers the textarea`);
       await shot(picture);
     }
+    check(q("#codeWrap .hl .t-section"), "INI sections are coloured");
     // Saving YAML encrypts it again, for the same recipient.
     fileBtn("app.yaml").click();
     await until("the YAML file", () => cur && cur.path.endsWith("app.yaml") && q("#editor #textEdit"));
-    q("#textEdit").value = q("#textEdit").value.replace("smtp.example", "smtp2.example");
+    check(q("#codeWrap").classList.contains("masked"), "a file opened again is masked again");
+    await click("#revealText");
+    q("#textEdit").value = q("#textEdit").value.replace("smtp.example", "smtp2.example").trimEnd() + "\n# rotated\n";
     q("#textEdit").dispatchEvent(new Event("input", { bubbles: true }));
+    check(q("#codeWrap .hl").textContent.includes("smtp2.example") && [...document.querySelectorAll("#codeWrap .t-comment")].some((c) => c.textContent === "# rotated"),
+      "the colours follow typing");
     await click("#save");
     await shows("#dirty", "Saved");
     check(cur.text.includes("smtp2.example") && cur.recipients.length === 1, "a YAML file saves, for the same recipient");

@@ -8,7 +8,7 @@ A Tauri 2 desktop app for SOPS-encrypted files (env, YAML, JSON, INI and plain t
   - `src/lib.rs`: `App::handle(action, body)` is the single entry point the UI calls.
   - `tests/flow.rs`: end-to-end test against a real `sops`.
 - `src-tauri/`: the desktop shell. `src/main.rs` wires one `api` command to `App::handle`. `tauri.conf.json` holds window, CSP and bundle settings; `capabilities/default.json` the permissions.
-- `ui/`: the frontend. `index.html`, `style.css`, `app.js`. Vanilla JS, no bundler, no dependencies.
+- `ui/`: the frontend. `index.html`, `style.css`, `app.js`, and `highlight.js` for the text editor's syntax colours (YAML, JSON, INI; TOML and .conf by extension). Vanilla JS, no bundler, no dependencies. The colours are a copy of the text in a layer behind a transparent textarea, so `highlight.html` must return exactly the input's characters; the UI test checks that they line up.
 - `ui/selftest.js` and `src-tauri/src/ui_test.rs`: the scripted UI self-test. With `OPEN_SOPS_UI_SELFTEST=<folder>` set, the app clicks through itself, takes screenshots and exits. Inactive otherwise.
 - `ui-tests/selftest.mjs`: runs that test against a binary with throwaway folders and checks the files on disk. Plain Node, no dependencies.
 - `.github/workflows/build.yml`: on pull requests, pushes to `main`, weekly, and called by the release workflow. Jobs: `build` (tests, packages, smoke test and UI test per platform), `distros` (packages installed and UI-tested in distribution containers), `os-versions` (UI test on the older macOS runners), `screenshots` (one artifact with every platform's pictures), `required` ("All checks passed", the single check the ruleset for `main` requires).

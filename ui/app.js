@@ -230,6 +230,7 @@ async function openFile(f) {
 function meta() { return S.files.find((f) => cur && f.path === cur.path); }
 
 const FORMATS = { dotenv: "Env", yaml: "YAML", json: "JSON", ini: "INI", binary: "Text" };
+const HIGHLIGHT_MAX = 300_000;
 
 function renderEditor() {
   const el = $("#editor");
@@ -268,8 +269,11 @@ function renderEditor() {
   }
   let body;
   if (text) {
-    body = `<textarea class="textedit${cur.revealed ? "" : " masked"}" id="textEdit" spellcheck="false" autocomplete="off"
-      autocapitalize="off" aria-label="File content" placeholder="${cur.isNew ? "Content of the new file" : ""}"></textarea>`;
+    // Coloured syntax sits behind a transparent textarea, so typing, selecting
+    // and undo stay the browser's own. Masked or plain text needs no layer.
+    body = `<div class="codewrap${cur.revealed ? "" : " masked"}" id="codeWrap"><pre class="hl" aria-hidden="true"><code></code></pre>
+      <textarea class="textedit" id="textEdit" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off"
+      aria-label="File content" placeholder="${cur.isNew ? "Content of the new file" : ""}"></textarea></div>`;
   } else {
     const orig = new Map(JSON.parse(cur.orig).filter((i) => i.t === "kv").map((i) => [i.k, i.v]));
     const rows = cur.items.map((it, i) => {
@@ -310,7 +314,20 @@ function renderEditor() {
     const area = $("#textEdit");
     // Set as a value, not as markup: the parser would drop a leading line break.
     area.value = cur.text;
-    area.oninput = () => { cur.text = area.value; mark(); };
+    const wrap = $("#codeWrap"), layer = $("#codeWrap .hl"), code = $("#codeWrap code");
+    const lang = highlight.language(cur.format, cur.newName || cur.path);
+    const paint = () => {
+      // Very large files stay plain; colouring them on every key would lag.
+      const on = !!lang && cur.revealed && area.value.length <= HIGHLIGHT_MAX;
+      wrap.classList.toggle("coloured", on);
+      if (!on) return;
+      code.innerHTML = highlight.html(lang, area.value) + "\n"; // the extra line keeps a final empty line in view
+      layer.scrollTop = area.scrollTop;
+      layer.scrollLeft = area.scrollLeft;
+    };
+    area.onscroll = () => { layer.scrollTop = area.scrollTop; layer.scrollLeft = area.scrollLeft; };
+    area.oninput = () => { cur.text = area.value; paint(); mark(); };
+    paint();
     $("#revealText").onclick = () => { cur.revealed = !cur.revealed; renderEditor(); };
     $("#copyText").onclick = () => copy(cur.text, "Content", true);
   } else {
