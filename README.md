@@ -100,7 +100,15 @@ Tauri can't cross-compile: each system's package has to be built on that system 
 
 ## Release
 
-Pushing a version tag publishes a GitHub release with all packages, both variants, and a `SHA256SUMS.txt`:
+Pull requests and pushes to `main` only build and test; nothing is released until you start it. A release goes from beta to stable:
+
+1. **Pre-release:** on GitHub, open Actions → Release → Run workflow, keep `main` and choose `beta`. This releases the current `main` as the next `v<version>-beta.N`, where `<version>` is the one in `src-tauri/tauri.conf.json`.
+2. **Stable release:** run it again with `stable`. This releases the commit of the latest beta as `v<version>`, so what goes out as stable is exactly what was tried as a beta. There is no stable release without a beta.
+3. **Next version:** raise the version in `src-tauri/tauri.conf.json` before the next beta.
+
+The workflow builds and tests every platform first and only then creates the tag and publishes the release, so a failed build leaves no tag behind. The tag names whoever started the run as its tagger. An optional introduction for the release notes can be entered when starting it.
+
+Pushing a version tag yourself works too and publishes the same release, with all packages, both variants, and a `SHA256SUMS.txt`:
 
 ```bash
 git tag v0.1.0-beta.1 && git push origin v0.1.0-beta.1

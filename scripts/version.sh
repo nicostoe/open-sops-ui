@@ -8,7 +8,8 @@
 #                          package metadata that formats can take without
 #                          breaking (pass it to `tauri build --config`).
 #
-# Tag v1.2.0          -> 1.2.0
+# Tag v1.2.0          -> 1.2.0   (or RELEASE_TAG=v1.2.0, for a release started
+#                                 from the Actions tab, before the tag exists)
 # Tag v1.2.0-beta.4   -> 1.2.0-beta.4
 # Any other CI build  -> <version in tauri.conf.json>-dev.<run number>
 # Local, outside CI   -> the version in tauri.conf.json
@@ -27,6 +28,7 @@ base="$(sed -n 's/^  "version": "\([0-9]*\.[0-9]*\.[0-9]*\)",$/\1/p' src-tauri/t
 [ -n "$base" ] || { echo "version.sh: no x.y.z version in src-tauri/tauri.conf.json" >&2; exit 1; }
 
 ref="${GITHUB_REF:-}"
+if [ -n "${RELEASE_TAG:-}" ]; then ref="refs/tags/$RELEASE_TAG"; fi
 if [[ "$ref" == refs/tags/v* ]]; then
   version="${ref#refs/tags/v}"
 elif [ -n "${GITHUB_RUN_NUMBER:-}" ]; then
