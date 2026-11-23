@@ -6,15 +6,12 @@
   "semanticCommits": "disabled",
   "commitMessagePrefix": "[renovate]",
   "timezone": "Europe/Berlin",
-  "schedule": [
-    "before 6am on monday"
-  ],
   "rebaseWhen": "behind-base-branch",
   "lockFileMaintenance": {
     "enabled": true,
     "automerge": true,
     "schedule": [
-      "before 6am on monday"
+      "on monday"
     ]
   },
   "customManagers": [
@@ -41,7 +38,7 @@
   ],
   "packageRules": [
     {
-      "description": "Minor and patch updates arrive as one weekly pull request and merge themselves once CI is green",
+      "description": "Minor and patch updates arrive as one grouped pull request as soon as Renovate finds them, and merge themselves once CI is green",
       "matchUpdateTypes": [
         "minor",
         "patch",
