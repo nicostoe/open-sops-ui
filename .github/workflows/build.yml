@@ -5,6 +5,15 @@ name: Build
 on:
   workflow_dispatch:
   workflow_call:
+    inputs:
+      tag:
+        description: The release tag to build, for a release whose tag is created after the build
+        type: string
+        default: ""
+      ref:
+        description: The commit to build, when it isn't the one the run started on
+        type: string
+        default: ""
   pull_request:
   push:
     branches: [main]
@@ -54,6 +63,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.ref }}
           fetch-depth: 0 # the tags, for the release notes preview
 
       - name: Install Linux build and test dependencies
@@ -100,6 +110,10 @@ jobs:
         if: runner.os == 'Linux'
         run: scripts/test-release-notes.sh
 
+      - name: Test the next release's version
+        if: runner.os == 'Linux'
+        run: scripts/test-next-release.sh
+
       - name: Test the package names
         run: scripts/test-collect-bundles.sh
 
@@ -115,6 +129,8 @@ jobs:
       # The version comes from the tag (a release) or the run number (any other
       # build), so every CI run builds and tests a pre-release version too.
       - name: Set the version
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
         run: scripts/version.sh
 
       - name: Download and verify the pinned sops
@@ -210,6 +226,8 @@ jobs:
           fi
 
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
 
       - uses: actions/setup-node@v7
         with:
@@ -252,6 +270,8 @@ jobs:
             target: x86_64-apple-darwin
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
 
       - uses: actions/setup-node@v7
         with:
