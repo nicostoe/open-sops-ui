@@ -2608,7 +2608,13 @@ mod tests {
         assert_eq!(store("x.YML"), Store::Yaml);
         assert_eq!(store("secrets.env.json"), Store::Json);
         assert_eq!(store("db.ini"), Store::Ini);
-        for name in ["valkey-users.enc.acl", ".envrc", "notes", "id_rsa"] {
+        for name in [
+            "recovery-codes.txt",
+            "secrets.enc",
+            ".envrc",
+            "notes",
+            "id_rsa",
+        ] {
             assert_eq!(format_for_name(name), Format::BINARY, "{name}");
         }
     }

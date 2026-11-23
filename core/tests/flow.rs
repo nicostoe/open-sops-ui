@@ -861,11 +861,11 @@ fn text_formats_flow(app: &mut App, root: &std::path::Path, a: &str, b: &str) {
         ))
         .unwrap()
     };
-    let acl = encrypt(
-        &["valkey-users.enc.acl"],
+    let notes = encrypt(
+        &["recovery-codes.txt"],
         ("binary", "json"),
         &[],
-        b"user default off\r\nuser alice on >pw-1 ~* +@all\r\n",
+        b"Recovery codes\r\n7f3a-91c2\r\n",
     );
     let yaml = encrypt(
         &["config.yaml"],
@@ -925,7 +925,7 @@ fn text_formats_flow(app: &mut App, root: &std::path::Path, a: &str, b: &str) {
             .unwrap_or_else(|| "absent".into())
     };
     for (rel, expected) in [
-        ("valkey-users.enc.acl", "binary"),
+        ("recovery-codes.txt", "binary"),
         ("config.yaml", "yaml"),
         ("app.json", "json"),
         ("db.ini", "ini"),
@@ -983,39 +983,38 @@ fn text_formats_flow(app: &mut App, root: &std::path::Path, a: &str, b: &str) {
     assert_eq!(App::new(Some(dir.clone()), vec![]).scan_depth(), 3);
 
     // A text file opens as text and saves in place, Windows line endings kept.
-    let opened = app.handle("open", &json!({ "path": acl })).unwrap();
+    let opened = app.handle("open", &json!({ "path": notes })).unwrap();
     assert_eq!(
         (opened["kind"].as_str(), opened["format"].as_str()),
         (Some("text"), Some("binary"))
     );
-    assert_eq!(
-        opened["text"],
-        "user default off\r\nuser alice on >pw-1 ~* +@all\r\n"
-    );
+    assert_eq!(opened["text"], "Recovery codes\r\n7f3a-91c2\r\n");
     assert!(opened["reencrypt"].is_null());
     let saved = app
-        .handle("save", &json!({ "path": acl, "text": "user default off\nuser bob on >pw-2\n", "rev": opened["rev"] }))
+        .handle(
+            "save",
+            &json!({ "path": notes, "text": "Recovery codes\n2b8e-40d7\n", "rev": opened["rev"] }),
+        )
         .unwrap();
+    assert_eq!(saved["file"]["text"], "Recovery codes\r\n2b8e-40d7\r\n");
     assert_eq!(
-        saved["file"]["text"],
-        "user default off\r\nuser bob on >pw-2\r\n"
+        decrypt(&notes, ("json", "binary")),
+        "Recovery codes\r\n2b8e-40d7\r\n"
     );
-    assert_eq!(
-        decrypt(&acl, ("json", "binary")),
-        "user default off\r\nuser bob on >pw-2\r\n"
-    );
-    assert!(!std::fs::read_to_string(&acl).unwrap().contains("pw-2"));
+    assert!(!std::fs::read_to_string(&notes)
+        .unwrap()
+        .contains("2b8e-40d7"));
     assert_eq!(saved["file"]["recipients"][0]["key"], a);
     // A stale fingerprint is a conflict, as for env files.
     let stale = app
         .handle(
             "save",
-            &json!({ "path": acl, "text": "x\n", "rev": opened["rev"] }),
+            &json!({ "path": notes, "text": "x\n", "rev": opened["rev"] }),
         )
         .unwrap();
     assert_eq!(stale, json!({ "conflict": true }));
     assert!(
-        app.handle("save", &json!({ "path": acl, "items": [] }))
+        app.handle("save", &json!({ "path": notes, "items": [] }))
             .is_err(),
         "a text file takes text"
     );
@@ -1112,9 +1111,9 @@ fn text_formats_flow(app: &mut App, root: &std::path::Path, a: &str, b: &str) {
         (Some("yaml"), Some("text"))
     );
     assert_eq!(format(&made["state"], "service.yaml"), "yaml");
-    let made = new_text(app, "users.acl", "user carol on\n").unwrap();
+    let made = new_text(app, "codes.txt", "c64f-1e8b\n").unwrap();
     assert_eq!(made["file"]["format"], "binary");
-    assert_eq!(made["file"]["text"], "user carol on\n");
+    assert_eq!(made["file"]["text"], "c64f-1e8b\n");
     assert!(app
         .handle("create", &json!({ "dir": dir.to_string_lossy(), "name": "x.json", "items": [{ "t": "kv", "k": "A", "v": "1" }], "recipients": [a] }))
         .unwrap_err()

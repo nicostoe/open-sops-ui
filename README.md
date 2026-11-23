@@ -8,10 +8,13 @@ Decrypted values are held in memory only. The only network request the app makes
   <img src="docs/screenshots/editor-light.png" width="49%" alt="Editing an encrypted env file: one value changed, one variable added">
   <img src="docs/screenshots/changes-dark.png" width="49%" alt="Dark mode: what changed in an encrypted file since the last commit">
 </p>
+<p align="center">
+  <img src="docs/screenshots/text-editor-light.png" width="49%" alt="An encrypted YAML file opened as text, with syntax colours">
+</p>
 
 ## What it does
 
-- Lists the SOPS-encrypted files in a folder, whatever their name: env, YAML, JSON and INI files, and any other text file sops encrypted as a whole (such as a Valkey ACL file). Files are recognised by their sops metadata; plaintext files aren't listed. It shows which of your keys opens each.
+- Lists the SOPS-encrypted files in a folder, whatever their name: env, YAML, JSON and INI files, and any other text file sops encrypted as a whole. Files are recognised by their sops metadata; plaintext files aren't listed. It shows which of your keys opens each.
 - Searches subfolders three levels deep by default and skips dependency and build folders such as `node_modules`; both are settings. A thin bar at the top of the file list shows when a scan takes a moment.
 - Knows Git: files are grouped by repository with its branch, marked when they differ from the last commit, and a comparison shows what changed, decrypted, where `git diff` only shows ciphertext: by variable for env files, by line for everything else.
 - Edits env files in a table and saves each change through `sops` on its own, so unchanged values stay byte-identical in Git and nothing decrypted is written to disk, not even to a temp file.

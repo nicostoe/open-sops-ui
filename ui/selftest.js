@@ -52,7 +52,7 @@
   try {
     setTheme("light");
     await until("the file list", () => q("#files .file[data-i]"));
-    for (const name of [".env.production", ".env.staging", "valkey-users.enc.acl", "app.yaml", "feature-flags.json", "billing.ini"]) {
+    for (const name of [".env.production", ".env.staging", "recovery-codes.txt", "app.yaml", "feature-flags.json", "billing.ini"]) {
       check(fileBtn(name), `${name} is listed`);
     }
     check(!fileBtn(".env.example"), "a plaintext file isn't listed");
@@ -347,10 +347,10 @@
     q("#toast").className = "";
 
     // Other formats open as text: the whole content in one field, masked until shown.
-    fileBtn("valkey-users.enc.acl").click();
-    await until("the text editor", () => cur && cur.path.endsWith(".acl") && q("#editor #textEdit"));
+    fileBtn("recovery-codes.txt").click();
+    await until("the text editor", () => cur && cur.path.endsWith("recovery-codes.txt") && q("#editor #textEdit"));
     check(q("#codeWrap").classList.contains("masked"), "the content is masked at first");
-    check(q("#textEdit").value.includes("user app on"), "the decrypted ACL is in the editor");
+    check(q("#textEdit").value.includes("Recovery codes"), "the decrypted text is in the editor");
     check(text(".filehead .fmt") === "TEXT" || text(".filehead .fmt") === "Text", "the format is shown");
     check(!q("#editor .row") && !q("#addVar"), "a text file has no variable table");
     check(!q("#codeWrap").classList.contains("coloured"), "masked text isn't coloured");
@@ -360,28 +360,28 @@
     check(!q("#codeWrap").classList.contains("coloured"), "a text file without a known syntax stays plain");
     const area = q("#textEdit");
     area.focus();
-    area.value += "user worker on >worker-pw-91c2 ~queue:* +@list\n";
+    area.value += "c64f-1e8b-77a2\n";
     area.dispatchEvent(new Event("input", { bubbles: true }));
     await shows("#dirty", "Unsaved");
     await shot("14c-text-file");
     await click("#save");
     await shows("#dirty", "Saved");
-    check(q("#textEdit").value.endsWith("+@list\n") && !q("#codeWrap").classList.contains("masked"), "saving keeps the content and the view");
-    await until("the modified mark", () => fileBtn("valkey-users.enc.acl").querySelector(".gs")?.innerText === "M");
+    check(q("#textEdit").value.endsWith("77a2\n") && !q("#codeWrap").classList.contains("masked"), "saving keeps the content and the view");
+    await until("the modified mark", () => fileBtn("recovery-codes.txt").querySelector(".gs")?.innerText === "M");
     await click("#changesBtn");
     await until("the line changes", () => q("#dlg[open] .diff"));
     const diff = [...document.querySelectorAll("#dlg .dl")].map((l) => l.className.replace("dl ", ""));
     check(diff.filter((k) => k === "added").length === 1 && !diff.includes("removed"), "the comparison shows the one added line");
-    check(!text("#dlg .diff").includes("worker-pw"), "the lines are hidden at first");
+    check(!text("#dlg .diff").includes("c64f-1e8b"), "the lines are hidden at first");
     await click("#chgReveal");
-    await shows("#dlg .diff", "worker-pw-91c2");
+    await shows("#dlg .diff", "c64f-1e8b-77a2");
     await shot("14d-text-changes");
     await click("#dlg [data-close]");
     // Discarding text edits brings back the saved content.
     q("#textEdit").value = "scratch";
     q("#textEdit").dispatchEvent(new Event("input", { bubbles: true }));
     await click("#revert");
-    check(q("#textEdit").value.endsWith("+@list\n") && !text("#dirty").includes("Unsaved"), "Discard restores the saved text");
+    check(q("#textEdit").value.endsWith("77a2\n") && !text("#dirty").includes("Unsaved"), "Discard restores the saved text");
 
     for (const [name, part, label, picture] of [
       ["app.yaml", "session_secret", "YAML", "14e-yaml-file"],
@@ -431,7 +431,7 @@
     depth.value = "1";
     depth.dispatchEvent(new Event("change", { bubbles: true }));
     await until("the shallow file list", () => S.settings.scanDepth === 1 && !fileBtn(".env.testing"));
-    check(fileBtn("valkey-users.enc.acl") && !fileBtn(".env.testing"), "a lower depth leaves out deeper files");
+    check(fileBtn("recovery-codes.txt") && !fileBtn(".env.testing"), "a lower depth leaves out deeper files");
     depth.value = "3";
     depth.dispatchEvent(new Event("change", { bubbles: true }));
     await until("the deep files again", () => fileBtn(".env.testing"));

@@ -41,9 +41,9 @@ const ORIGINAL = [
   "",
 ].join("\n");
 const EXPECTED = ORIGINAL.replace("sk_test_1", "sk_test_changed") + "SENTRY_DSN=https://abc123@sentry.example/42\n";
-// A Valkey ACL file, which sops encrypts as one block of text.
-const ACL = "user default off\nuser app on >app-pw-7f3a ~app:* +@read +@write\n";
-const ACL_EXPECTED = ACL + "user worker on >worker-pw-91c2 ~queue:* +@list\n";
+// A plain text file, which sops encrypts as one block of text.
+const NOTES = "Recovery codes for the admin account\n7f3a-91c2-e5d0\n2b8e-40d7-a913\n";
+const NOTES_EXPECTED = NOTES + "c64f-1e8b-77a2\n";
 const EXPECTED_SHOTS = 30;
 const TIMEOUT_MS = 180_000;
 
@@ -92,7 +92,7 @@ const project = join(root, "projects", "shop-api");
 const config = join(root, ".config");
 const keysFile = join(config, "sops", "age", "keys.txt");
 const envFile = join(project, ".env.production");
-const aclFile = join(project, "config", "valkey-users.enc.acl");
+const notesFile = join(project, "config", "recovery-codes.txt");
 // Holds the teammate's key for the app to paste; removed once the app is done.
 const fixtureFile = join(out, "fixture.json");
 mkdirSync(project, { recursive: true });
@@ -154,7 +154,7 @@ try {
   put("services/worker/config/.env.testing", encrypt(".env.testing", "QUEUE_URL=redis://localhost:6379/9\n"));
   put("services/worker/.env", encrypt(".env", "QUEUE_URL=redis://localhost:6379/1\nCONCURRENCY=4\n"));
   put(".env.staging", encrypt(".env.staging", "DATABASE_URL=postgres://shop:dev@localhost:5432/shop_staging\nLOG_LEVEL=debug\n"));
-  put("config/valkey-users.enc.acl", encrypt("valkey-users.enc.acl", ACL, "binary", "json"));
+  put("config/recovery-codes.txt", encrypt("recovery-codes.txt", NOTES, "binary", "json"));
   put("config/app.yaml", encrypt("app.yaml", "server:\n  port: 8080\n  session_secret: 9c1f4e2a7b\nmail:\n  host: smtp.example\n  password: m41l-pw\n", "yaml"));
   put("config/feature-flags.json", encrypt("feature-flags.json", JSON.stringify({ checkout: { enabled: true, apiKey: "ff_live_51c0" } }, null, 2), "json"));
   put("config/billing.ini", encrypt("billing.ini", "[stripe]\nsecret = sk_live_6a2e\nwebhook = whsec_8d41\n\n[invoice]\nprefix = SHOP\n", "ini"));
@@ -169,7 +169,7 @@ try {
   }));
 
   // The project is a Git repository, the usual home of these files: the
-  // example, the ACL and the other formats are committed, the staging file
+  // example, the text file and the other formats are committed, the staging file
   // is ignored, the rest is untracked.
   const git = (...args) =>
     execFileSync("git", ["-c", "user.name=UI test", "-c", "user.email=ui-test@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false", ...args], { cwd: project, stdio: "ignore" });
@@ -214,16 +214,16 @@ try {
     failures.push(`sops couldn't decrypt the new file: ${e.message.split("\n")[0]}`);
   }
   check(created === "CI_TOKEN=abc123\n", "the file created in the app decrypts to what was entered");
-  let acl = "";
+  let notes = "";
   try {
-    acl = execFileSync(sops, ["decrypt", "--input-type", "json", "--output-type", "binary", aclFile], {
+    notes = execFileSync(sops, ["decrypt", "--input-type", "json", "--output-type", "binary", notesFile], {
       env: { ...env, SOPS_AGE_KEY: team.secret }, encoding: "utf8",
     });
   } catch (e) {
-    failures.push(`sops couldn't decrypt the ACL file: ${e.message.split("\n")[0]}`);
+    failures.push(`sops couldn't decrypt the text file: ${e.message.split("\n")[0]}`);
   }
-  check(acl === ACL_EXPECTED, "the ACL file edited as text decrypts to the edited content");
-  check(!readFileSync(aclFile, "utf8").includes("worker-pw"), "the edited ACL file is encrypted on disk");
+  check(notes === NOTES_EXPECTED, "the text file edited in the app decrypts to the edited content");
+  check(!readFileSync(notesFile, "utf8").includes("c64f-1e8b"), "the edited text file is encrypted on disk");
 
   const shots = readdirSync(out).filter((f) => f.endsWith(".png")).sort();
   const usable = shots.filter((f) => statSync(join(out, f)).size > 5000);
