@@ -3,12 +3,14 @@ name: Release
 # Publishes a release with packages for every platform, in one of two ways:
 #
 # - From the Actions tab: "Release" → "Run workflow" on main, choosing beta or
-#   stable. A beta is the current main; stable promotes the commit of the
-#   latest beta, and needs one (scripts/next-release.sh). The app is built and
-#   tested at that commit with the release's version, and only then is the
-#   tag created and the release published, so a failed build leaves no tag.
-#   Nothing is released unless someone starts it: pull requests and pushes to
-#   main only build.
+#   stable. Versions come from the tags alone (scripts/next-release.sh): a
+#   beta releases the current main as the next v<version>-beta.N, where the
+#   bump (patch, minor, major) picks the version after the latest stable
+#   release; stable promotes the commit of the latest beta, and needs one.
+#   The app is built and tested at that commit with the release's version,
+#   and only then is the tag created and the release published, so a failed
+#   build leaves no tag. Nothing is released unless someone starts it: pull
+#   requests and pushes to main only build.
 # - By pushing a tag like v0.2.0. A tag with a suffix, like v0.2.0-beta.1,
 #   publishes a pre-release.
 on:
@@ -17,10 +19,15 @@ on:
   workflow_dispatch:
     inputs:
       channel:
-        description: "beta: the next v<version>-beta.N of main, a pre-release. stable: v<version> from the latest beta."
+        description: "beta: main as the next pre-release. stable: promote the latest beta."
         type: choice
         options: [beta, stable]
         default: beta
+      bump:
+        description: "For a beta: what comes after the latest stable release (1.1.0 → patch 1.1.1, minor 1.2.0, major 2.0.0). Betas already further along carry on."
+        type: choice
+        options: [patch, minor, major]
+        default: patch
       intro:
         description: "Optional introduction at the top of the release notes"
         type: string
@@ -53,14 +60,15 @@ jobs:
         id: tag
         env:
           CHANNEL: ${{ inputs.channel }}
+          BUMP: ${{ inputs.bump }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
             if [ "$GITHUB_REF" != refs/heads/main ]; then
               echo "::error::Releases are made from main. Run the workflow on main."
               exit 1
             fi
-            read -r tag commit < <(scripts/next-release.sh "$CHANNEL")
-            [ -n "$commit" ] || exit 1
+            next="$(scripts/next-release.sh "$CHANNEL" "$BUMP")"
+            read -r tag commit <<<"$next"
           else
             tag="$GITHUB_REF_NAME"
             commit="$GITHUB_SHA"
@@ -69,16 +77,14 @@ jobs:
           { echo "tag=$tag"; echo "commit=$commit"; } >> "$GITHUB_OUTPUT"
           echo "### Releasing $tag from \`${commit:0:7}\`" >> "$GITHUB_STEP_SUMMARY"
 
-      # Package file names carry the version from tauri.conf.json, so a tag
-      # that disagrees would publish mislabelled files.
-      - name: Tag must match src-tauri/tauri.conf.json
+      # The packages take their version from the tag (scripts/version.sh),
+      # so it has to be one.
+      - name: The tag must be a version
         env:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
-          configured="$(jq -r .version src-tauri/tauri.conf.json)"
-          tagged="${TAG#v}"; tagged="${tagged%%-*}"
-          if [ "$configured" != "$tagged" ]; then
-            echo "::error::Tag $TAG doesn't match version $configured in src-tauri/tauri.conf.json. Update the file, then tag again."
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::$TAG isn't a version tag like v1.2.0 or v1.2.0-beta.1."
             exit 1
           fi
 

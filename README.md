@@ -100,11 +100,16 @@ Tauri can't cross-compile: each system's package has to be built on that system 
 
 ## Release
 
-Pull requests and pushes to `main` only build and test; nothing is released until you start it. A release goes from beta to stable:
+Pull requests and pushes to `main` only build and test; every run attaches the packages to the run, as `<version>-dev.<run>`. Nothing is released until you start it, and every stable release starts as a beta. On GitHub, open Actions → Release → Run workflow and keep `main`:
 
-1. **Pre-release:** on GitHub, open Actions → Release → Run workflow, keep `main` and choose `beta`. This releases the current `main` as the next `v<version>-beta.N`, where `<version>` is the one in `src-tauri/tauri.conf.json`.
-2. **Stable release:** run it again with `stable`. This releases the commit of the latest beta as `v<version>`, so what goes out as stable is exactly what was tried as a beta. There is no stable release without a beta.
-3. **Next version:** raise the version in `src-tauri/tauri.conf.json` before the next beta.
+| Channel | Bump | What it does (example: the latest stable release is `v1.1.0`) |
+| --- | --- | --- |
+| `beta` | `patch` (default) | Releases the current `main` as `v1.1.1-beta.1`, a pre-release. Run again: `v1.1.1-beta.2`, … |
+| `beta` | `minor` | `v1.2.0-beta.1`; from then on, further betas continue with `1.2.0`, whatever the bump says. |
+| `beta` | `major` | `v2.0.0-beta.1`. |
+| `stable` | – | Releases the commit of the latest beta as its version (`v1.2.0`), so what goes out is exactly what was tried as a beta. Refused while there is no newer beta. |
+
+The versions come from the tags alone, so nothing has to be raised by hand between releases; the version in `src-tauri/tauri.conf.json` only serves local builds. The workflow builds and tests every platform with the release's version first and only then creates the tag and publishes the release, so a failed build leaves no tag behind. The tag names whoever started the run as its tagger. An optional introduction for the release notes can be entered when starting it.
 
 The workflow builds and tests every platform first and only then creates the tag and publishes the release, so a failed build leaves no tag behind. The tag names whoever started the run as its tagger. An optional introduction for the release notes can be entered when starting it.
 
@@ -130,7 +135,7 @@ git tag -a v2.0.0 -m v2.0.0 -m "What this release is about." && git push origin 
 
 The release runs the full build workflow first, so nothing is published unless every test passes.
 
-The tag also sets the version compiled into the app (`scripts/version.sh`), which the update notice compares. The packages keep the plain `x.y.z`, because `.rpm` doesn't accept a pre-release in the version and `.deb` would sort a release below its own betas. Where a format has a separate field, it carries the pre-release: the `.rpm` release (`0.1.0-0.beta.4`, so `dnf` sorts betas before the release) and the `.msi`'s fourth number (`0.1.0.4`, a label only, as Windows compares the first three). Installing a newer beta `.deb` over an older one of the same base version may need `sudo apt install --reinstall ./file.deb`. The tag has to match `version` in `src-tauri/tauri.conf.json`, because the package file names come from there; for a new version, change that one line, commit, then tag.
+The tag also sets the version compiled into the app (`scripts/version.sh`), which the update notice compares. The packages keep the plain `x.y.z`, because `.rpm` doesn't accept a pre-release in the version and `.deb` would sort a release below its own betas. Where a format has a separate field, it carries the pre-release: the `.rpm` release (`0.1.0-0.beta.4`, so `dnf` sorts betas before the release) and the `.msi`'s fourth number (`0.1.0.4`, a label only, as Windows compares the first three). Installing a newer beta `.deb` over an older one of the same base version may need `sudo apt install --reinstall ./file.deb`. The packages get their plain `x.y.z` from the tag as well, so a tag needs no change to `src-tauri/tauri.conf.json`.
 
 The bundled `sops` version is pinned in `scripts/fetch-sops.sh`. The script verifies the release's checksums file with cosign and then the binary's SHA-256. [Renovate](https://docs.renovatebot.com) opens a pull request when a new `sops` release appears (`renovate.json`); the Renovate GitHub App has to be installed on the repository for that. `sops` is licensed under the MPL 2.0, and its licence text ships next to the binary.
 
