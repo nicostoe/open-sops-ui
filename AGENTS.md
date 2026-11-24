@@ -24,6 +24,12 @@ A Tauri 2 desktop app for SOPS-encrypted files (env, YAML, JSON, INI and plain t
 
 ## Commands
 
+Needs Rust, Node.js 20+ and the Tauri prerequisites; on Debian or Ubuntu:
+
+```bash
+sudo apt install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev librsvg2-dev build-essential libssl-dev
+```
+
 ```bash
 cargo test -p open-sops-ui-core
 ```
@@ -35,6 +41,8 @@ npm run dev
 ```bash
 npm run build
 ```
+
+Tauri can't cross-compile: each system's packages are built on that system, in CI on a runner for it. `build.yml` attaches every run's packages to the run as artifacts.
 
 ## How it works
 
@@ -57,6 +65,28 @@ npm run build
 - **Git:** optional everywhere. Repository and branch come from the file system (`repo_root`, `repo_branch` read `.git`), so grouping works without the `git` binary. Status needs `git` and costs two calls per repository (`git_states`), never one per file. `changes` decrypts `git show HEAD:<file>` and compares by variable for env files and by line for everything else (`text_changes`). The app only reads from Git; it never commits, pushes, or writes decrypted values to disk.
 - **Versions:** come from the Git tags alone; no file has to be raised for a release. The app's version is `OPEN_SOPS_UI_VERSION` from the build (`build_version` in `main.rs`), falling back to `tauri.conf.json` locally, which is all that version is for. Package metadata gets the plain `x.y.z` through `tauri.version.conf.json`; never let a pre-release reach a package's version, because `.rpm` rejects it and `.deb` misorders it.
 - **Update notice:** the page fetches `api.github.com/repos/nicostoe/open-sops-ui/releases` (allowed in the CSP's `connect-src`) on start and every 24 hours, unless turned off. `pick_update` in the core decides what to announce: newer than this build, and a stable build never hears about a pre-release. `open_release_page` opens only this project's release URL, built from a validated tag. Nothing is downloaded. A check gives up after 10 seconds (`UPDATE_TIMEOUT_MS`), only one runs at a time, and a failure is silent unless the user pressed "Check now"; a notice already shown stays.
+
+## Releasing
+
+Nothing is released unless someone starts it; every stable release starts as a beta. Actions → Release → Run workflow on `main`:
+
+| Channel | Bump | Result (latest stable `v1.1.0`) |
+| --- | --- | --- |
+| `beta` | `patch` (default) | `main` as `v1.1.1-beta.1`, then `-beta.2`, … |
+| `beta` | `minor` / `major` | `v1.2.0-beta.1` / `v2.0.0-beta.1`; later betas carry on with that version |
+| `stable` | – | the latest beta's commit as `v1.2.0`; refused without a newer beta |
+
+- The optional `intro` input becomes the annotated tag's message, which opens the release notes. The notes list `feat:`, `fix:` and `[renovate]` commits since the previous tag (a stable release: since the previous stable one, betas included). Preview them with `scripts/release-notes.sh`.
+- Pushing a tag by hand still works (`git tag -a v2.0.0 -m v2.0.0 -m "Intro." && git push origin v2.0.0`); a `-suffix` makes a pre-release.
+- Every release carries both package variants (with and without `sops`) and `SHA256SUMS.txt`.
+- Packages keep the plain `x.y.z`. Where a format has a field for it, the pre-release goes there: the `.rpm` release (`1.1.0-0.beta.1`, so `dnf` sorts betas before the release) and the `.msi`'s fourth number (a label only; Windows compares three). Installing a newer beta `.deb` over one of the same base version may need `sudo apt install --reinstall ./file.deb`.
+- The workflow pushes the tag with its own `GITHUB_TOKEN`, which doesn't start further workflows; that's why the same run publishes the release. A ruleset protecting tags would need a bypass for GitHub Actions.
+
+## Dependencies
+
+- **Renovate** (`renovate.json`) opens pull requests as soon as it finds an update, without Dependency Dashboard approval, and keeps them rebased on `main`. Minor and patch updates come grouped and merge themselves once CI is green; so does a new `sops` release, in its own pull request. Major updates wait for a manual merge. Lock file maintenance runs on Mondays. The Renovate GitHub App has to be installed on the repository.
+- The bundled `sops` is pinned in `scripts/fetch-sops.sh`, verified with cosign and SHA-256; its MPL 2.0 licence text ships next to the binary.
+- `audit.yml` checks the Rust and npm dependencies weekly for known vulnerabilities.
 
 ## Commit messages
 
@@ -91,10 +121,10 @@ The project is kept up to date by Renovate with auto-merge, so the tests are the
 
 - **Git:** `git_flow` in `tests/flow.rs` covers status and comparison against a real repository; `works_without_git_installed` in `lib.rs` covers the app with no `git` binary. The UI test's project is a repository, and its test-only `commit` action (in `ui_test.rs`) creates the commit to compare against.
 - **Backend:** `cargo test -p open-sops-ui-core`. `tests/flow.rs` is one end-to-end flow against a real sops; extend it when you add or change an action. It skips itself when no `sops` is on `PATH`; put the one from `scripts/fetch-sops.sh` there to run it. `text_formats_flow` encrypts YAML, JSON, INI and text files with sops directly, as a project would, and covers recognising, saving, options and the scan settings. The test sets `EDITOR` to a program that doesn't exist, so a save that tried to use an editor would fail.
-- **UI:** `node ui-tests/selftest.mjs target/release/open-sops-ui`. The steps live in `ui/selftest.js`; extend them when you change `ui/` or add a flow, add a `shot(...)` for every new screen, and update `EXPECTED` and `EXPECTED_SHOTS` in `ui-tests/selftest.mjs`. Native file dialogs can't be driven; the test passes the folder as an argument instead. The project's files are encrypted with sops before the app starts, for a key `selftest.mjs` generates (`ageKeyPair`, no `age-keygen` needed); the page gets that key and further encrypted files through the test-only `fixture` action, and `fixture.json` is deleted when the app exits. Wait for a specific element, never for text that is also in a static hint. A closed dialog keeps its old content, so wait for `#dlg[open] …` when a dialog is reused.
+- **UI:** `node ui-tests/selftest.mjs target/release/open-sops-ui` (needs a display and, on Linux, ImageMagick; screenshots land in `ui-test-output/`). The steps live in `ui/selftest.js`; extend them when you change `ui/` or add a flow, add a `shot(...)` for every new screen, and update `EXPECTED` and `EXPECTED_SHOTS` in `ui-tests/selftest.mjs`. Native file dialogs can't be driven; the test passes the folder as an argument instead. The project's files are encrypted with sops before the app starts, for a key `selftest.mjs` generates (`ageKeyPair`, no `age-keygen` needed); the page gets that key and further encrypted files through the test-only `fixture` action, and `fixture.json` is deleted when the app exits. Wait for a specific element, never for text that is also in a static hint. A closed dialog keeps its old content, so wait for `#dlg[open] …` when a dialog is reused.
 - **README pictures:** `docs/screenshots/` comes from the same UI test. After a visible UI change, regenerate with `scripts/readme-screenshots.sh <with-sops .deb>` (needs Docker); it runs in a clean container so no local paths end up in the pictures.
 - **Screenshot privacy:** in test mode the window is titled `ui_test::WINDOW_TITLE`, and on Linux screenshots find the window by that title. Never go back to the normal title: a run on a developer's desktop would then capture their own open copy of the app. On macOS and Windows the test captures the whole screen, so run it only on CI runners or other machines without personal windows.
-- **Screenshots:** every CI run publishes a `screenshots` artifact. Look at them after changing styles or layout; they have already caught a rendering bug no assertion would.
+- **Screenshots:** every CI run publishes a `screenshots` artifact, and its summary lists which platforms passed. A failed check repeats its error as an annotation readable without signing in. Look at them after changing styles or layout; they have already caught a rendering bug no assertion would.
 - **Packages:** `open-sops-ui --self-check [file]` reports as JSON which sops the app would use and its version, without opening a window. `scripts/smoke-test.sh` relies on it and checks the version matches `OPEN_SOPS_UI_VERSION`.
 - **Updates:** `picks_the_update_to_announce` in `lib.rs` covers the rules. The UI test gets a fixed release list (`releases.json`, written by `ui-tests/selftest.mjs`) instead of GitHub's, and in test mode `open_release_page` records the tag instead of opening a browser. The fixture can also be `{"simulate": "error" | "hang", "timeoutMs": n}`, which the page turns into a failed or never-answering request; the UI test uses both. CI builds are pre-releases (`-dev.N`), local ones stable, so the test checks whichever rule applies.
 - **Required check:** `main` only accepts pull requests whose "All checks passed" job is green. It waits for `build` and `distros`; add every new job that must pass before merging to its `needs`. Leave out jobs whose runners are often unavailable (the macOS 15 checks), or every runner shortage blocks merging. `.github/CODEOWNERS` asks the owner to review every pull request.
