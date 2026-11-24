@@ -29,7 +29,7 @@ Decrypted values stay in memory. The only network request is an optional update 
 
 ## How it works
 
-The app is a front end for the `sops` command line tool. It finds files by their sops metadata, not their name, and calls `sops` with your age keys to read and write them. Decrypted content only travels to `sops` through stdin, so nothing decrypted is written to disk, not even a temp file. The app reads from Git but never commits or pushes.
+The app is a front end for the `sops` command line tool. It finds files by their sops metadata and calls `sops` with your age keys to read and write them. Decrypted content only travels to `sops` through stdin, so nothing decrypted is written to disk, not even a temp file. The app reads from Git but never commits or pushes.
 
 Keys come from the default `keys.txt`, from other key files, or are pasted for the session.
 
