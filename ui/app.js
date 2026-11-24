@@ -22,6 +22,8 @@ const ICONS = {
   branch: '<circle cx="6" cy="5" r="2.5"/><circle cx="6" cy="19" r="2.5"/><circle cx="18" cy="8" r="2.5"/><path d="M6 7.5v9M18 10.5c0 5-12 2-12 6"/>',
   up: '<path d="M12 19V5M6 11l6-6 6 6"/>',
   alert: '<path d="M12 3l9.5 17h-19z"/><path d="M12 10v4M12 17.5v.1"/>',
+  expand: '<path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"/>',
+  shrink: '<path d="M20 4l-7 7M13 5v6h6M4 20l7-7M11 19v-6H5"/>',
 };
 const ic = (n) => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[n]}</svg>`;
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -631,6 +633,8 @@ function settingsDialog() {
 // close button, the backdrop and Escape then call it instead of closing.
 function show(dlg, title, html) {
   dlg.onleave = null;
+  dlg.className = ""; // a size set for one view (see changesDialog) doesn't carry over
+
   dlg.innerHTML = `<div class="dhead"><span>${title}</span><span class="spacer"></span>
     <button class="btn icon" data-close aria-label="Close">${ic("x")}</button></div><div class="dbody">${html}</div>`;
   dlg.querySelector("[data-close]").onclick = () => (dlg.onleave ? dlg.onleave() : dlg.close());
@@ -650,7 +654,9 @@ async function changesDialog() {
   const dlg = $("#dlg"), m = meta();
   const label = { added: "Added", changed: "Changed", removed: "Removed" };
   const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
-  let reveal = false;
+  // Text changes get a wide dialog whose list can be dragged taller, and a
+  // button that grows the dialog to nearly the whole window.
+  let reveal = false, large = false;
   const render = () => {
     const hidden = "••••••••";
     let rows, after = "";
@@ -671,8 +677,13 @@ async function changesDialog() {
       <p class="muted small">${d.committed ? `Compared with the committed version of ${name}.` : `${name} has never been committed, so everything in it is new.`}</p>
       ${rows || `<p>The content is the same as in the last commit. Only the encryption changed, for example the recipients.</p>`}
       ${after}
-      ${rows ? `<div class="formrow" style="justify-content:flex-end"><button class="btn" id="chgReveal">${ic(reveal ? "eyeoff" : "eye")}${reveal ? "Hide values" : "Show values"}</button></div>` : ""}`);
+      ${rows ? `<div class="formrow" style="justify-content:flex-end">
+        ${d.kind === "text" ? `<button class="btn" id="chgSize" title="${large ? "Back to the normal size" : "Use nearly the whole window"}">${ic(large ? "shrink" : "expand")}${large ? "Smaller" : "Larger"}</button>` : ""}
+        <button class="btn" id="chgReveal">${ic(reveal ? "eyeoff" : "eye")}${reveal ? "Hide values" : "Show values"}</button></div>` : ""}`);
+    if (d.kind === "text") dlg.classList.add("wide");
+    if (large) dlg.classList.add("large");
     if ($("#chgReveal", dlg)) $("#chgReveal", dlg).onclick = () => { reveal = !reveal; render(); };
+    if ($("#chgSize", dlg)) $("#chgSize", dlg).onclick = () => { large = !large; render(); };
   };
   render();
 }

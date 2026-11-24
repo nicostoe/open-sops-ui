@@ -180,6 +180,7 @@
     await until("the changes", () => q("#dlg[open] .chg")); // [open]: a closed dialog keeps its old content
     check(kinds().join(", ") === "Changed STRIPE_SECRET, Added SENTRY_DSN", "the comparison lists exactly what changed since the commit");
     check(text("#dlg").includes("3 unchanged"), "unchanged variables are counted, not listed");
+    check(!q("#dlg").classList.contains("wide") && !q("#dlg #chgSize"), "the variable comparison keeps the normal dialog size");
     await shot("09-changes-since-commit");
     await click("#chgReveal");
     await shows("#dlg", "sk_test_changed");
@@ -375,7 +376,18 @@
     check(!text("#dlg .diff").includes("c64f-1e8b"), "the lines are hidden at first");
     await click("#chgReveal");
     await shows("#dlg .diff", "c64f-1e8b-77a2");
+    const box = (sel) => q(sel).getBoundingClientRect();
+    check(q("#dlg").classList.contains("wide") && box("#dlg").width > 700, "the text comparison gets a wide dialog");
+    check(getComputedStyle(q("#dlg .diff")).resize === "vertical", "the changed lines can be dragged taller");
     await shot("14d-text-changes");
+    const normal = box("#dlg .diff").height;
+    await click("#dlg #chgSize");
+    await until("the large dialog", () => q("#dlg.large[open] #chgSize"));
+    check(box("#dlg").height > innerHeight - 60 && box("#dlg .diff").height > normal, "Larger grows the dialog to nearly the window, the list with it");
+    check(text("#dlg .diff").includes("c64f-1e8b-77a2"), "the shown values stay shown at the larger size");
+    await shot("14d2-text-changes-large");
+    await click("#dlg #chgSize");
+    await until("the normal size again", () => !q("#dlg").classList.contains("large") && q("#dlg[open] #chgSize"));
     await click("#dlg [data-close]");
     // Discarding text edits brings back the saved content.
     q("#textEdit").value = "scratch";
@@ -419,6 +431,7 @@
 
     await click("#settingsBtn");
     await until("the settings", () => q("#dlg[open] #clipSel"));
+    check(!q("#dlg").classList.contains("wide") && q("#dlg").getBoundingClientRect().width <= 600, "a dialog opened later has its normal size again");
     const sel = q("#clipSel");
     sel.value = "60";
     sel.dispatchEvent(new Event("change", { bubbles: true }));
