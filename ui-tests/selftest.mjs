@@ -44,7 +44,7 @@ const EXPECTED = ORIGINAL.replace("sk_test_1", "sk_test_changed") + "SENTRY_DSN=
 // A plain text file, which sops encrypts as one block of text.
 const NOTES = "Recovery codes for the admin account\n7f3a-91c2-e5d0\n2b8e-40d7-a913\n";
 const NOTES_EXPECTED = NOTES + "c64f-1e8b-77a2\n";
-const EXPECTED_SHOTS = 31;
+const EXPECTED_SHOTS = 32;
 const TIMEOUT_MS = 180_000;
 
 // An age key pair, as age-keygen makes it: X25519 keys in bech32. CI runners
