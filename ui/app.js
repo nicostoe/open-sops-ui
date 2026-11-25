@@ -297,6 +297,9 @@ function renderEditor() {
   const canCompare = m && m.repo && S.git && (m.git === "modified" || m.git === "new");
   const count = (cur.recipients || []).length;
   const fmt = FORMATS[cur.format];
+  // Env files: one button reveals or hides every value; "Hide all" once each is shown.
+  const kvRows = text ? [] : cur.items.map((it, i) => (it.t === "kv" ? i : -1)).filter((i) => i >= 0);
+  const allShown = kvRows.length > 0 && kvRows.every((i) => shown.has(i));
   el.innerHTML = `${note}
     <div class="filehead"><span class="name mono">${esc(m ? m.name : cur.isNew ? cur.newName : cur.path)}</span>
       <span class="muted small">${cur.isNew ? "New file, saved encrypted" : `${count} recipient${count === 1 ? "" : "s"}`}</span>
@@ -304,6 +307,7 @@ function renderEditor() {
       <span class="tools">
         ${text ? `<button class="btn sm" id="revealText">${ic(cur.revealed ? "eyeoff" : "eye")}${cur.revealed ? "Hide" : "Show"}</button>
           <button class="btn sm" id="copyText" title="Copy the whole content">${ic("copy")}Copy</button>` : ""}
+        ${kvRows.length ? `<button class="btn sm" id="revealAll">${ic(allShown ? "eyeoff" : "eye")}${allShown ? "Hide all" : "Show all"}</button>` : ""}
         ${canCompare ? `<button class="btn sm" id="changesBtn" title="Compare with the last commit">${ic("branch")}Changes</button>` : ""}
       </span></div>
     ${body}
@@ -311,6 +315,11 @@ function renderEditor() {
       <button class="btn" id="revert" hidden>Discard</button>
       <button class="btn primary" id="save" ${cantSave ? `disabled title="${esc(cur.reencrypt)}"` : ""}>${ic("lock")}Encrypt and save</button></div>`;
   if ($("#changesBtn")) $("#changesBtn").onclick = changesDialog;
+  if ($("#revealAll")) $("#revealAll").onclick = () => {
+    if (allShown) shown.clear();
+    else kvRows.forEach((i) => shown.add(i));
+    renderEditor();
+  };
 
   if (text) {
     const area = $("#textEdit");

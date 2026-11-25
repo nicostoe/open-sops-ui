@@ -134,6 +134,21 @@
     await click("#dlg [data-close]");
     await shot("05-env-file");
 
+    // Show all / hide all values at once; revealing every row one by one counts too.
+    const valueTypes = () => [...document.querySelectorAll("#editor .row .val")].map((v) => v.type);
+    check(valueTypes().every((t) => t === "password") && text("#revealAll").includes("Show all"), "values start hidden, with a Show all button");
+    await click("#revealAll");
+    await until("every value shown", () => valueTypes().every((t) => t === "text"));
+    check(text("#revealAll").includes("Hide all"), "Show all reveals every value and turns into Hide all");
+    await shot("05a-env-all-shown");
+    await click("#revealAll");
+    await until("every value hidden", () => valueTypes().every((t) => t === "password"));
+    for (let i = 1; i <= 4; i++) await click(`#editor .row:nth-of-type(${i}) [data-a=eye]`);
+    check(valueTypes().every((t) => t === "text") && text("#revealAll").includes("Hide all"), "revealing each value by hand also offers Hide all");
+    await click("#revealAll");
+    await until("every value hidden again", () => valueTypes().every((t) => t === "password"));
+    check(text("#revealAll").includes("Show all"), "Hide all hides every value");
+
     // Add my own key as a recipient, so the file opens without the teammate's key.
     await click("#recBtn");
     await until("the recipient choice", () => q("#dlg[open] #addSel"));
